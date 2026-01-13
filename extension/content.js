@@ -370,13 +370,24 @@
 
         if (!priceSection) return null;
 
-        // Look for price text paragraph WITHIN the price section
-        const textEl = priceSection.querySelector('p') ||
-                       priceSection.querySelector('[class*="description"]') ||
-                       priceSection.querySelector('[class*="text"]');
+        // Look for ALL paragraphs in the section and find one with price-related content
+        const allParagraphs = priceSection.querySelectorAll('p');
+        console.log('[GPA] Found', allParagraphs.length, 'paragraphs in price section');
+
+        let textEl = null;
+        for (const p of allParagraphs) {
+            const pText = (p.textContent || '').toLowerCase();
+            // Look for price-related keywords
+            if (pText.includes('preis') || pText.includes('chf') || pText.includes('sank') ||
+                pText.includes('höchststand') || pText.includes('tiefststand')) {
+                textEl = p;
+                console.log('[GPA] Found price paragraph with keywords');
+                break;
+            }
+        }
 
         if (!textEl) {
-            console.log('[GPA] No text element found in price section');
+            console.log('[GPA] No price-related paragraph found');
             return null;
         }
 
@@ -462,12 +473,27 @@
                 yAxisTexts = svg.querySelectorAll('text.recharts-cartesian-axis-tick-value');
             }
             if (yAxisTexts.length === 0) {
-                // Find all text elements and filter for Y-axis (those with numeric content like "100.–")
+                // Find all text elements in the SVG and log them
                 const allTexts = svg.querySelectorAll('text');
+                console.log('[GPA] Total text elements in SVG:', allTexts.length);
+
+                // Log first 10 text elements for debugging
+                const sampleTexts = [];
+                for (let i = 0; i < Math.min(allTexts.length, 10); i++) {
+                    sampleTexts.push(allTexts[i].textContent);
+                }
+                console.log('[GPA] Sample text elements:', sampleTexts);
+
+                // Filter for Y-axis labels - look for price-like text (number with optional CHF, .–, etc.)
                 const filtered = [];
                 for (const t of allTexts) {
-                    const content = t.textContent || '';
-                    if (/^\d+\.–$/.test(content.trim()) || /^\d+$/.test(content.trim())) {
+                    const content = (t.textContent || '').trim();
+                    // Match various price formats: "100.–", "100", "100.00", "CHF 100", etc.
+                    if (/^\d+\.–$/.test(content) ||
+                        /^\d+$/.test(content) ||
+                        /^\d+\.\d+$/.test(content) ||
+                        /^CHF\s*\d+/i.test(content) ||
+                        /^\d+['']?\d*\.–$/.test(content)) {
                         filtered.push(t);
                     }
                 }
@@ -493,19 +519,7 @@
 
             console.log('[GPA] Parsed', yAxisLabels.length, 'Y-axis labels');
 
-            if (yAxisLabels.length < 2) continue;
-
-            // Sort by Y coordinate (top to bottom = high price to low price)
-            yAxisLabels.sort((a, b) => a.y - b.y);
-
-            const minY = yAxisLabels[0].y;
-            const maxY = yAxisLabels[yAxisLabels.length - 1].y;
-            const maxPrice = yAxisLabels[0].price; // Top = highest price
-            const minPrice = yAxisLabels[yAxisLabels.length - 1].price; // Bottom = lowest price
-
-            console.log('[GPA] Y-axis mapping:', { minY, maxY, minPrice, maxPrice });
-
-            // Find the main chart line path
+            // Find the main chart line path first
             let mainPath = null;
             const allPaths = svg.querySelectorAll('path');
 
@@ -527,13 +541,30 @@
                 }
             }
 
-            // Fallback: any path with many L commands
+            // Fallback: any path with stroke and many L commands (but not gradient/area fill)
+            if (!mainPath) {
+                for (const path of allPaths) {
+                    const d = path.getAttribute('d');
+                    const stroke = path.getAttribute('stroke');
+                    const fill = path.getAttribute('fill');
+                    if (d && stroke && stroke !== 'none' && (!fill || fill === 'none')) {
+                        const lCount = (d.match(/L/g) || []).length;
+                        if (lCount > 20) {
+                            console.log('[GPA] Found stroked path with', lCount, 'L commands');
+                            mainPath = path;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Last fallback: any path with many L commands
             if (!mainPath) {
                 for (const path of allPaths) {
                     const d = path.getAttribute('d');
                     if (d) {
                         const lCount = (d.match(/L/g) || []).length;
-                        if (lCount > 100) {
+                        if (lCount > 50) {
                             console.log('[GPA] Found fallback path with', lCount, 'L commands');
                             mainPath = path;
                             break;
@@ -543,18 +574,17 @@
             }
 
             if (!mainPath) {
-                console.log('[GPA] No suitable path found');
+                console.log('[GPA] No suitable path found in this SVG');
                 continue;
             }
 
-            const d = mainPath.getAttribute('d');
-
             // Parse path coordinates
+            const pathD = mainPath.getAttribute('d');
             const allPoints = [];
             const regex = /([ML])\s*([\d.]+)[,\s]+([\d.]+)/g;
             let match;
 
-            while ((match = regex.exec(d)) !== null) {
+            while ((match = regex.exec(pathD)) !== null) {
                 allPoints.push({ x: parseFloat(match[2]), y: parseFloat(match[3]) });
             }
 
@@ -575,7 +605,37 @@
 
             console.log('[GPA] Reduced to', uniquePoints.length, 'unique points');
 
-            if (uniquePoints.length < 5) continue;
+            if (uniquePoints.length < 5) {
+                console.log('[GPA] Not enough unique points');
+                continue;
+            }
+
+            // Get Y-axis bounds - either from labels or from path coordinates
+            let minY, maxY, minPrice, maxPrice;
+
+            if (yAxisLabels.length >= 2) {
+                // Sort by Y coordinate (top to bottom = high price to low price)
+                yAxisLabels.sort((a, b) => a.y - b.y);
+                minY = yAxisLabels[0].y;
+                maxY = yAxisLabels[yAxisLabels.length - 1].y;
+                maxPrice = yAxisLabels[0].price; // Top = highest price
+                minPrice = yAxisLabels[yAxisLabels.length - 1].price; // Bottom = lowest price
+                console.log('[GPA] Y-axis mapping from labels:', { minY, maxY, minPrice, maxPrice });
+            } else {
+                // Fallback: estimate from path bounds and current price
+                const yValues = uniquePoints.map(p => p.y);
+                minY = Math.min(...yValues);
+                maxY = Math.max(...yValues);
+
+                // Try to get current price from page
+                const currentPrice = getCurrentPriceFromPage() || 100;
+                // Assume ±20% price range based on typical variation
+                maxPrice = currentPrice * 1.15;
+                minPrice = currentPrice * 0.85;
+                console.log('[GPA] Y-axis mapping estimated:', { minY, maxY, minPrice, maxPrice, currentPrice });
+            }
+
+            console.log('[GPA] Final Y-axis mapping:', { minY, maxY, minPrice, maxPrice });
 
             // Map Y coordinates to prices
             const priceData = uniquePoints.map((p, i) => {
