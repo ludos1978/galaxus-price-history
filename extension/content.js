@@ -4,270 +4,146 @@
 
     let currentProductId = null;
     let panel = null;
-    let capturedPriceData = { allTime: null, threeMonths: null };
-    let currentTimePeriod = null; // Track which time period we're capturing
 
-    // Inject script into page context to intercept network requests
-    function injectNetworkInterceptor() {
-        const script = document.createElement('script');
-        script.textContent = `
-            (function() {
-                if (window._gpaInterceptorInstalled) return;
-                window._gpaInterceptorInstalled = true;
-
-                const originalFetch = window.fetch;
-                window.fetch = async function(...args) {
-                    const response = await originalFetch.apply(this, args);
-                    try {
-                        const url = args[0]?.url || args[0];
-                        if (typeof url === 'string' && url.includes('graphql')) {
-                            const clonedResponse = response.clone();
-                            const data = await clonedResponse.json();
-                            window.postMessage({ type: 'GPA_NETWORK_DATA', data: data }, '*');
-                        }
-                    } catch (e) {}
-                    return response;
-                };
-            })();
-        `;
-        (document.head || document.documentElement).appendChild(script);
-        script.remove();
-    }
-
-    // Listen for intercepted data from page context
-    window.addEventListener('message', function(event) {
-        if (event.data && event.data.type === 'GPA_NETWORK_DATA') {
-            const priceData = findPriceHistoryInResponse(event.data.data);
-            if (priceData && priceData.length > 0) {
-                console.log('[GPA] Captured price data from network:', priceData.length, 'points, period:', currentTimePeriod);
-
-                // Store based on current time period being loaded
-                if (currentTimePeriod === '3months') {
-                    capturedPriceData.threeMonths = normalizeData(priceData);
-                } else {
-                    capturedPriceData.allTime = normalizeData(priceData);
-                }
-
-                if (panel && panel.classList.contains('visible')) {
-                    setTimeout(() => renderWithCapturedData(), 100);
-                }
-            }
-        }
-    });
-
-    // Inject the interceptor
-    injectNetworkInterceptor();
-
-    function findPriceHistoryInResponse(obj, depth = 0) {
-        if (depth > 20 || !obj || typeof obj !== 'object') return null;
-
-        if (Array.isArray(obj)) {
-            if (obj.length > 5 && obj[0] && (obj[0].date || obj[0].Date) && (obj[0].price || obj[0].Price || obj[0].amountIncl)) {
-                return obj;
-            }
-        }
-
-        const priceKeys = ['priceHistory', 'PriceHistory', 'priceEvolution', 'priceDevelopment', 'prices', 'history'];
-        for (const key of priceKeys) {
-            if (obj[key] && Array.isArray(obj[key]) && obj[key].length > 0) {
-                return obj[key];
-            }
-        }
-
-        for (const key in obj) {
-            if (obj.hasOwnProperty(key)) {
-                const result = findPriceHistoryInResponse(obj[key], depth + 1);
-                if (result) return result;
-            }
-        }
-
-        return null;
-    }
-
-    function renderWithCapturedData() {
-        if (!panel) return;
-        if (capturedPriceData.allTime || capturedPriceData.threeMonths) {
-            renderContent(capturedPriceData, false);
-        }
-    }
-
+    // Extract product ID from URL
     function getProductId() {
         const match = window.location.pathname.match(/-(\d+)$/);
         return match ? match[1] : null;
+    }
+
+    // Click and expand the Preisentwicklung section
+    async function expandPriceHistory() {
+        console.log('[GPA] Looking for Preisentwicklung button...');
+
+        // Save current scroll position
+        const savedScrollY = window.scrollY;
+
+        // Specific selector for the Preisentwicklung button
+        const button = document.querySelector('#priceHistoryBlock') ||
+                       document.querySelector('[data-test="priceHistoryBlock"]') ||
+                       document.querySelector('button[aria-controls*="priceHistory"]');
+
+        if (button) {
+            // Scroll the button into view to trigger lazy loading
+            console.log('[GPA] Scrolling Preisentwicklung into view...');
+            button.scrollIntoView({ behavior: 'auto', block: 'center' });
+            await sleep(300);
+
+            const isExpanded = button.getAttribute('aria-expanded') === 'true';
+            console.log('[GPA] Found priceHistoryBlock button, expanded:', isExpanded);
+
+            if (!isExpanded) {
+                console.log('[GPA] Clicking to expand...');
+                button.click();
+                await sleep(1500); // Wait for data to load
+            } else {
+                console.log('[GPA] Already expanded');
+            }
+
+            // Now click time period tabs to load both datasets
+            await clickTimePeriodTabs();
+
+            // Restore scroll position
+            window.scrollTo({ top: savedScrollY, behavior: 'auto' });
+
+            return true;
+        }
+
+        console.log('[GPA] priceHistoryBlock button not found, trying fallbacks...');
+
+        // Fallback: search for text
+        const allElements = document.querySelectorAll('button, [role="button"]');
+        for (const el of allElements) {
+            const text = (el.textContent || '').trim();
+            if (text === 'Preisentwicklung') {
+                console.log('[GPA] Found button by text, scrolling and clicking...');
+                el.scrollIntoView({ behavior: 'auto', block: 'center' });
+                await sleep(300);
+                el.click();
+                await sleep(1500);
+                await clickTimePeriodTabs();
+                // Restore scroll position
+                window.scrollTo({ top: savedScrollY, behavior: 'auto' });
+                return true;
+            }
+        }
+
+        console.log('[GPA] Could not find Preisentwicklung button');
+        return false;
+    }
+
+    // Click both "3 Monate" and "Alles" tabs to load both time periods
+    async function clickTimePeriodTabs() {
+        console.log('[GPA] Looking for time period tabs...');
+
+        // Store data from each period
+        window._gpaTimeData = { threeMonths: null, allTime: null };
+
+        // Find all buttons/tabs in the price history section
+        const priceHistorySection = document.querySelector('#priceHistoryBlock')?.parentElement?.parentElement ||
+                                    document.querySelector('[data-test="priceHistoryBlock"]')?.parentElement?.parentElement;
+
+        if (!priceHistorySection) {
+            console.log('[GPA] Could not find price history section for tabs');
+            return;
+        }
+
+        // Look for tab buttons - they typically contain "3 Monate" or "Alles"
+        const buttons = priceHistorySection.querySelectorAll('button, [role="tab"], [role="button"]');
+        let threeMonthsBtn = null;
+        let allTimeBtn = null;
+
+        for (const btn of buttons) {
+            const text = (btn.textContent || '').trim().toLowerCase();
+            if (text.includes('3 monate') || text.includes('3 month') || text === '3m') {
+                threeMonthsBtn = btn;
+            } else if (text.includes('alles') || text.includes('all') || text === 'max' || text === 'alle') {
+                allTimeBtn = btn;
+            }
+        }
+
+        // Click "Alles" first to get full history
+        if (allTimeBtn) {
+            console.log('[GPA] Clicking "Alles" tab...');
+            allTimeBtn.click();
+            await sleep(1500);
+            // Extract and store "all time" data
+            window._gpaTimeData.allTime = extractFromVisibleChart() || extractFromPriceText();
+        }
+
+        // Click "3 Monate" to get recent data
+        if (threeMonthsBtn) {
+            console.log('[GPA] Clicking "3 Monate" tab...');
+            threeMonthsBtn.click();
+            await sleep(1500);
+            // Extract and store "3 months" data
+            window._gpaTimeData.threeMonths = extractFromVisibleChart() || extractFromPriceText();
+        }
+
+        // If no tabs found, try looking for segmented control or similar
+        if (!threeMonthsBtn && !allTimeBtn) {
+            console.log('[GPA] No time period tabs found, looking for alternatives...');
+            const allButtons = document.querySelectorAll('button, [role="tab"]');
+            for (const btn of allButtons) {
+                const text = (btn.textContent || '').trim();
+                if (/^(3\s*M|3\s*Monate|Alles|All|Max)$/i.test(text)) {
+                    console.log('[GPA] Found time button:', text);
+                }
+            }
+        }
     }
 
     function sleep(ms) {
         return new Promise(resolve => setTimeout(resolve, ms));
     }
 
-    // Expand Preisentwicklung and load both time periods
-    async function expandPriceHistory() {
-        console.log('[GPA] Looking for Preisentwicklung button...');
-
-        const button = document.querySelector('#priceHistoryBlock') ||
-                       document.querySelector('[data-test="priceHistoryBlock"]') ||
-                       document.querySelector('button[aria-controls*="priceHistory"]');
-
-        if (!button) {
-            // Fallback: search by text
-            const allElements = document.querySelectorAll('button, [role="button"]');
-            for (const el of allElements) {
-                const text = (el.textContent || '').trim();
-                if (text === 'Preisentwicklung') {
-                    return await expandAndLoadData(el);
-                }
-            }
-            console.log('[GPA] Could not find Preisentwicklung button');
-            return false;
-        }
-
-        return await expandAndLoadData(button);
-    }
-
-    async function expandAndLoadData(button) {
-        // Save scroll position
-        const scrollY = window.scrollY;
-
-        // Scroll button into view to trigger lazy loading
-        console.log('[GPA] Scrolling to Preisentwicklung to trigger lazy load...');
-        button.scrollIntoView({ behavior: 'auto', block: 'center' });
-        await sleep(500);
-
-        const isExpanded = button.getAttribute('aria-expanded') === 'true';
-        console.log('[GPA] Button expanded:', isExpanded);
-
-        if (!isExpanded) {
-            console.log('[GPA] Clicking to expand...');
-            button.click();
-            await sleep(2000); // Wait longer for content to load
-        }
-
-        // Wait for the chart to potentially render
-        console.log('[GPA] Waiting for chart to render...');
-        await sleep(1500);
-
-        // Try loading both time periods - retry if tabs not found initially
-        for (let retry = 0; retry < 3; retry++) {
-            const success = await loadBothTimePeriods(button);
-            if (success) break;
-            console.log('[GPA] Tabs not found, retrying in 1 second... (attempt', retry + 2, ')');
-            await sleep(1000);
-        }
-
-        // Restore scroll position
-        window.scrollTo({ top: scrollY, behavior: 'auto' });
-
-        return true;
-    }
-
-    async function loadBothTimePeriods(button) {
-        // Find the expanded content area - try multiple methods
-        let section = button.closest('section') || button.parentElement?.parentElement?.parentElement;
-
-        // Also try to find by price history section helper
-        if (!section || !section.querySelector) {
-            section = findPriceHistorySection();
-        }
-
-        if (!section) {
-            console.log('[GPA] Could not find section for time tabs');
-            return false;
-        }
-
-        // Look for time period buttons in the section and in the whole document as fallback
-        let allButtons = section.querySelectorAll('button, [role="tab"], [role="button"]');
-
-        // If no buttons in section, search more broadly
-        if (allButtons.length < 2) {
-            // Try finding tabs near the chart
-            const priceSection = findPriceHistorySection();
-            if (priceSection) {
-                allButtons = priceSection.querySelectorAll('button, [role="tab"], [role="button"]');
-            }
-        }
-
-        let threeMonthsBtn = null;
-        let allTimeBtn = null;
-
-        console.log('[GPA] Searching', allButtons.length, 'buttons for time tabs...');
-
-        for (const btn of allButtons) {
-            if (btn === button) continue;
-            const text = (btn.textContent || '').trim().toLowerCase();
-            if (text.includes('3 monate') || text.includes('3 month') || text === '3m' || text === '3') {
-                console.log('[GPA] Found 3-month button:', text);
-                threeMonthsBtn = btn;
-            } else if (text.includes('alles') || text.includes('all') || text === 'max' || text.includes('alle')) {
-                console.log('[GPA] Found all-time button:', text);
-                allTimeBtn = btn;
-            }
-        }
-
-        // Return false if we didn't find the tabs
-        if (!threeMonthsBtn && !allTimeBtn) {
-            console.log('[GPA] No time period tabs found');
-            return false;
-        }
-
-        // Load "Alles" (all time) first
-        if (allTimeBtn) {
-            console.log('[GPA] Clicking "Alles" tab...');
-            currentTimePeriod = 'alltime';
-            allTimeBtn.click();
-
-            // Wait longer and retry extraction multiple times
-            // The chart takes time to render after clicking
-            for (let attempt = 0; attempt < 5; attempt++) {
-                await sleep(1500); // Wait 1.5 seconds between attempts
-                console.log('[GPA] All-time extraction attempt', attempt + 1);
-                if (!capturedPriceData.allTime) {
-                    const extracted = extractFromVisibleChart() || extractFromPriceText();
-                    if (extracted) {
-                        capturedPriceData.allTime = normalizeData(extracted);
-                        console.log('[GPA] All-time data extracted on attempt', attempt + 1);
-                        break;
-                    }
-                } else {
-                    console.log('[GPA] All-time data already captured from network');
-                    break;
-                }
-            }
-        }
-
-        // Load "3 Monate"
-        if (threeMonthsBtn) {
-            console.log('[GPA] Clicking "3 Monate" tab...');
-            currentTimePeriod = '3months';
-            threeMonthsBtn.click();
-
-            for (let attempt = 0; attempt < 5; attempt++) {
-                await sleep(1500);
-                console.log('[GPA] 3-month extraction attempt', attempt + 1);
-                if (!capturedPriceData.threeMonths) {
-                    const extracted = extractFromVisibleChart() || extractFromPriceText();
-                    if (extracted) {
-                        capturedPriceData.threeMonths = normalizeData(extracted);
-                        console.log('[GPA] 3-month data extracted on attempt', attempt + 1);
-                        break;
-                    }
-                } else {
-                    console.log('[GPA] 3-month data already captured from network');
-                    break;
-                }
-            }
-        }
-
-        // Reset time period tracker
-        currentTimePeriod = null;
-        return true;
-    }
-
+    // Extract price data from __NEXT_DATA__ or Apollo state
     function extractFromPageData() {
         const nextDataScript = document.getElementById('__NEXT_DATA__');
         if (nextDataScript) {
             try {
                 const data = JSON.parse(nextDataScript.textContent);
-                const priceHistory = findPriceHistoryInResponse(data);
+                const priceHistory = findInObject(data, ['priceHistory', 'PriceHistory', 'priceEvolution', 'priceDevelopment']);
                 if (priceHistory && priceHistory.length > 0) {
                     console.log('[GPA] Found price history in __NEXT_DATA__:', priceHistory.length, 'points');
                     return priceHistory;
@@ -277,14 +153,16 @@
             }
         }
 
+        // Try Apollo cache
         if (window.__APOLLO_STATE__) {
-            const priceHistory = findPriceHistoryInResponse(window.__APOLLO_STATE__);
+            const priceHistory = findInObject(window.__APOLLO_STATE__, ['priceHistory', 'PriceHistory']);
             if (priceHistory && priceHistory.length > 0) {
                 console.log('[GPA] Found price history in Apollo state');
                 return priceHistory;
             }
         }
 
+        // Search all script tags for embedded data
         const scripts = document.querySelectorAll('script:not([src])');
         for (const script of scripts) {
             const content = script.textContent || '';
@@ -305,100 +183,87 @@
         return null;
     }
 
-    // Helper to find the price history section container
-    function findPriceHistorySection() {
-        // Try various selectors to find the price history section
+    function findInObject(obj, keys, depth = 0) {
+        if (depth > 15 || !obj || typeof obj !== 'object') return null;
 
-        // Method 1: Find by known class
-        let section = document.querySelector('.ypBxcVsA');
-        if (section) {
-            console.log('[GPA] Found section by .ypBxcVsA');
-            return section;
-        }
-
-        // Method 2: Find the expanded priceHistoryBlock content
-        const priceBlock = document.querySelector('#priceHistoryBlock[aria-expanded="true"]') ||
-                          document.querySelector('[data-test="priceHistoryBlock"][aria-expanded="true"]');
-        if (priceBlock) {
-            // Look for sibling or child content area
-            const parent = priceBlock.closest('section') || priceBlock.parentElement;
-            if (parent) {
-                // Find the content area that contains the chart
-                const content = parent.querySelector('.recharts-wrapper')?.closest('div') ||
-                               parent.querySelector('[class*="content"]') ||
-                               parent.querySelector('svg')?.parentElement;
-                if (content) {
-                    console.log('[GPA] Found section via priceHistoryBlock parent');
-                    return content.closest('div[class]') || parent;
-                }
+        for (const key of keys) {
+            if (obj[key] && Array.isArray(obj[key]) && obj[key].length > 0) {
+                return obj[key];
             }
         }
 
-        // Method 3: Find by text content "Preisentwicklung" and get expanded content
-        const allButtons = document.querySelectorAll('button, [role="button"]');
-        for (const btn of allButtons) {
-            if ((btn.textContent || '').trim() === 'Preisentwicklung' &&
-                btn.getAttribute('aria-expanded') === 'true') {
-                const parent = btn.closest('section') || btn.parentElement?.parentElement;
-                if (parent) {
-                    console.log('[GPA] Found section via Preisentwicklung button');
-                    return parent;
-                }
-            }
+        for (const key in obj) {
+            const result = findInObject(obj[key], keys, depth + 1);
+            if (result) return result;
         }
 
-        // Method 4: Find any section containing recharts
-        const rechartsWrapper = document.querySelector('.recharts-wrapper');
-        if (rechartsWrapper) {
-            const section = rechartsWrapper.closest('section') ||
-                           rechartsWrapper.closest('[class*="price"]') ||
-                           rechartsWrapper.parentElement?.parentElement;
-            if (section) {
-                console.log('[GPA] Found section via recharts-wrapper');
-                return section;
-            }
-        }
-
-        console.log('[GPA] Could not find price history section');
         return null;
     }
 
-    function extractFromPriceText() {
-        // First find the price history section
-        const priceSection = findPriceHistorySection();
-        console.log('[GPA] extractFromPriceText - priceSection found:', !!priceSection);
+    // Fetch from Galaxus GraphQL API
+    async function fetchFromAPI() {
+        const productId = getProductId();
+        if (!productId) return null;
 
-        if (!priceSection) return null;
+        console.log('[GPA] Fetching from API for product:', productId);
 
-        // Look for ALL paragraphs in the section and find one with price-related content
-        const allParagraphs = priceSection.querySelectorAll('p');
-        console.log('[GPA] Found', allParagraphs.length, 'paragraphs in price section');
+        try {
+            const response = await fetch(`https://${window.location.hostname}/api/graphql`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                },
+                credentials: 'include',
+                body: JSON.stringify({
+                    operationName: "PDP_GET_PRODUCT_DETAILS",
+                    variables: { productId: parseInt(productId) },
+                    query: `query PDP_GET_PRODUCT_DETAILS($productId: Int!) {
+                        productDetails: productDetailsV4(productId: $productId) {
+                            product {
+                                priceDevelopment {
+                                    priceHistory { date price { amountIncl } }
+                                }
+                            }
+                        }
+                    }`
+                })
+            });
 
-        let textEl = null;
-        for (const p of allParagraphs) {
-            const pText = (p.textContent || '').toLowerCase();
-            // Look for price-related keywords
-            if (pText.includes('preis') || pText.includes('chf') || pText.includes('sank') ||
-                pText.includes('höchststand') || pText.includes('tiefststand')) {
-                textEl = p;
-                console.log('[GPA] Found price paragraph with keywords');
-                break;
+            if (response.ok) {
+                const data = await response.json();
+                console.log('[GPA] API response:', data);
+                const priceHistory = findInObject(data, ['priceHistory']);
+                if (priceHistory) {
+                    return priceHistory.map(p => ({
+                        date: p.date,
+                        price: p.price?.amountIncl || p.price?.amount || p.price
+                    }));
+                }
             }
+        } catch (e) {
+            console.log('[GPA] API fetch error:', e);
         }
 
-        if (!textEl) {
-            console.log('[GPA] No price-related paragraph found');
-            return null;
-        }
+        return null;
+    }
+
+    // Extract price info from the visible text description
+    function extractFromPriceText() {
+        // Look for the price description paragraph
+        const textEl = document.querySelector('.yAa8UXh') ||
+                       document.querySelector('[class*="priceDescription"]') ||
+                       document.querySelector('#priceHistoryBlock + div p');
+
+        if (!textEl) return null;
 
         const text = textEl.textContent || '';
-        console.log('[GPA] Found price text:', text.substring(0, 100));
+        console.log('[GPA] Found price text:', text);
 
+        // Parse: "Der Preis sank am 5.9.2025 auf 398.– und erreichte am 29.1.2025 seinen Höchststand mit 738.36. Der aktuelle Preis liegt bei 449.–"
         const currentMatch = text.match(/aktuelle[rn]?\s+Preis\s+(?:liegt\s+)?bei\s+([\d'.,]+)/i);
         const lowestMatch = text.match(/(?:sank|fiel).*?auf\s+([\d'.,]+)/i);
         const highestMatch = text.match(/Höchststand.*?([\d'.,]+)/i);
-        const lowestDateMatch = text.match(/(?:sank|fiel)\s+am\s+([\d.]+)/i);
-        const highestDateMatch = text.match(/erreichte\s+am\s+([\d.]+)/i);
 
         const current = currentMatch ? parseFloat(currentMatch[1].replace(/[',–]/g, '')) : null;
         const lowest = lowestMatch ? parseFloat(lowestMatch[1].replace(/[',–]/g, '')) : null;
@@ -406,262 +271,83 @@
 
         if (current && lowest && highest) {
             console.log('[GPA] Extracted from text - Current:', current, 'Low:', lowest, 'High:', highest);
-
+            // Generate approximate data based on these values
             const data = [];
             const now = new Date();
-            const monthsBack = 12;
-
-            for (let i = monthsBack; i >= 0; i--) {
+            for (let i = 12; i >= 0; i--) {
                 const date = new Date(now);
                 date.setMonth(date.getMonth() - i);
-
-                let price;
-                if (i === 0) {
-                    price = current;
-                } else {
-                    const progress = (monthsBack - i) / monthsBack;
-                    const basePrice = lowest + (highest - lowest) * Math.sin(progress * Math.PI);
-                    const variation = (Math.random() - 0.5) * 0.1 * (highest - lowest);
-                    price = Math.max(lowest, Math.min(highest, basePrice + variation));
-                }
-
+                // Simulate price between low and high
+                const range = highest - lowest;
+                const randomFactor = Math.random();
+                const price = lowest + (range * randomFactor);
                 data.push({
                     date: date.toISOString().split('T')[0],
                     price: Math.round(price * 100) / 100
                 });
             }
-
+            // Set current price as last value
+            data[data.length - 1].price = current;
             return data;
         }
 
         return null;
     }
 
+    // Extract from visible SVG chart
     function extractFromVisibleChart() {
-        console.log('[GPA] extractFromVisibleChart called');
-
-        // Use the helper to find the price section
-        const priceSection = findPriceHistorySection();
-        console.log('[GPA] extractFromVisibleChart - priceSection:', !!priceSection);
-
-        // Log what's on the page for debugging
-        const allSvgs = document.querySelectorAll('svg');
-        const rechartsSvgs = document.querySelectorAll('.recharts-surface');
-        console.log('[GPA] Total SVGs on page:', allSvgs.length, 'Recharts SVGs:', rechartsSvgs.length);
-
-        const container = priceSection || document.body;
-
-        // Find all SVGs - try multiple selectors
-        let svgs = container.querySelectorAll('svg.recharts-surface');
-        if (svgs.length === 0) {
-            svgs = container.querySelectorAll('.recharts-wrapper svg');
-        }
-        if (svgs.length === 0) {
-            svgs = container.querySelectorAll('svg');
-        }
-
-        console.log('[GPA] Found', svgs.length, 'SVGs in container');
+        const svgs = document.querySelectorAll('svg');
 
         for (const svg of svgs) {
-            console.log('[GPA] Checking SVG with class:', svg.className);
-
-            // Extract Y-axis labels - try multiple selectors
-            const yAxisLabels = [];
-            let yAxisTexts = svg.querySelectorAll('.recharts-yAxis-tick-labels text');
-
-            if (yAxisTexts.length === 0) {
-                yAxisTexts = svg.querySelectorAll('text.recharts-cartesian-axis-tick-value');
-            }
-            if (yAxisTexts.length === 0) {
-                // Find all text elements in the SVG and log them
-                const allTexts = svg.querySelectorAll('text');
-                console.log('[GPA] Total text elements in SVG:', allTexts.length);
-
-                // Log first 10 text elements for debugging
-                const sampleTexts = [];
-                for (let i = 0; i < Math.min(allTexts.length, 10); i++) {
-                    sampleTexts.push(allTexts[i].textContent);
-                }
-                console.log('[GPA] Sample text elements:', sampleTexts);
-
-                // Filter for Y-axis labels - look for price-like text (number with optional CHF, .–, etc.)
-                const filtered = [];
-                for (const t of allTexts) {
-                    const content = (t.textContent || '').trim();
-                    // Match various price formats: "100.–", "100", "100.00", "CHF 100", etc.
-                    if (/^\d+\.–$/.test(content) ||
-                        /^\d+$/.test(content) ||
-                        /^\d+\.\d+$/.test(content) ||
-                        /^CHF\s*\d+/i.test(content) ||
-                        /^\d+['']?\d*\.–$/.test(content)) {
-                        filtered.push(t);
-                    }
-                }
-                yAxisTexts = filtered;
-            }
-
-            console.log('[GPA] Found', yAxisTexts.length, 'Y-axis text elements');
-
-            for (const text of yAxisTexts) {
-                const textContent = text.textContent || '';
-                // Parse price like "100.–", "150.–", etc.
-                const priceMatch = textContent.match(/([\d'.,]+)/);
-                if (priceMatch) {
-                    // Remove everything except digits
-                    const price = parseFloat(priceMatch[1].replace(/[^0-9]/g, ''));
-                    const yAttr = text.getAttribute('y');
-                    if (yAttr && price > 0) {
-                        yAxisLabels.push({ y: parseFloat(yAttr), price: price });
-                        console.log('[GPA] Y-axis label:', textContent, '-> y:', yAttr, 'price:', price);
-                    }
-                }
-            }
-
-            console.log('[GPA] Parsed', yAxisLabels.length, 'Y-axis labels');
-
-            // Find the main chart line path first
-            let mainPath = null;
-            const allPaths = svg.querySelectorAll('path');
-
-            console.log('[GPA] Found', allPaths.length, 'paths in SVG');
-
-            // First try to find recharts-line-curve without dashes
-            for (const path of allPaths) {
+            const paths = svg.querySelectorAll('path');
+            for (const path of paths) {
                 const d = path.getAttribute('d');
-                const strokeDash = path.getAttribute('stroke-dasharray');
-                const className = path.getAttribute('class') || '';
+                if (!d) continue;
 
-                if (d && className.includes('recharts-line-curve') && !strokeDash) {
-                    const lCount = (d.match(/L/g) || []).length;
-                    if (lCount > 10) {
-                        console.log('[GPA] Found line-curve path with', lCount, 'L commands');
-                        mainPath = path;
-                        break;
+                const lCount = (d.match(/L/g) || []).length;
+                if (lCount >= 5) {
+                    const points = [];
+                    const regex = /([ML])\s*([\d.]+)[,\s]+([\d.]+)/g;
+                    let match;
+                    while ((match = regex.exec(d)) !== null) {
+                        points.push({ x: parseFloat(match[2]), y: parseFloat(match[3]) });
                     }
-                }
-            }
 
-            // Fallback: any path with stroke and many L commands (but not gradient/area fill)
-            if (!mainPath) {
-                for (const path of allPaths) {
-                    const d = path.getAttribute('d');
-                    const stroke = path.getAttribute('stroke');
-                    const fill = path.getAttribute('fill');
-                    if (d && stroke && stroke !== 'none' && (!fill || fill === 'none')) {
-                        const lCount = (d.match(/L/g) || []).length;
-                        if (lCount > 20) {
-                            console.log('[GPA] Found stroked path with', lCount, 'L commands');
-                            mainPath = path;
-                            break;
+                    if (points.length >= 5) {
+                        const texts = svg.querySelectorAll('text');
+                        const prices = [];
+                        for (const text of texts) {
+                            const priceMatch = (text.textContent || '').match(/([\d'.,]+)/);
+                            if (priceMatch) {
+                                const price = parseFloat(priceMatch[1].replace(/[',]/g, ''));
+                                if (price > 10 && price < 100000) prices.push(price);
+                            }
+                        }
+
+                        if (prices.length >= 2) {
+                            const minPrice = Math.min(...prices);
+                            const maxPrice = Math.max(...prices);
+                            const minY = Math.min(...points.map(p => p.y));
+                            const maxY = Math.max(...points.map(p => p.y));
+
+                            console.log('[GPA] Extracting from chart, price range:', minPrice, '-', maxPrice);
+
+                            return points.map((p, i) => {
+                                const normalizedY = (maxY - p.y) / (maxY - minY);
+                                const price = minPrice + normalizedY * (maxPrice - minPrice);
+                                const date = new Date();
+                                date.setMonth(date.getMonth() - (points.length - 1 - i));
+                                return { date: date.toISOString().split('T')[0], price: Math.round(price * 100) / 100 };
+                            });
                         }
                     }
                 }
             }
-
-            // Last fallback: any path with many L commands
-            if (!mainPath) {
-                for (const path of allPaths) {
-                    const d = path.getAttribute('d');
-                    if (d) {
-                        const lCount = (d.match(/L/g) || []).length;
-                        if (lCount > 50) {
-                            console.log('[GPA] Found fallback path with', lCount, 'L commands');
-                            mainPath = path;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if (!mainPath) {
-                console.log('[GPA] No suitable path found in this SVG');
-                continue;
-            }
-
-            // Parse path coordinates
-            const pathD = mainPath.getAttribute('d');
-            const allPoints = [];
-            const regex = /([ML])\s*([\d.]+)[,\s]+([\d.]+)/g;
-            let match;
-
-            while ((match = regex.exec(pathD)) !== null) {
-                allPoints.push({ x: parseFloat(match[2]), y: parseFloat(match[3]) });
-            }
-
-            console.log('[GPA] Parsed', allPoints.length, 'raw points from path');
-
-            // Remove duplicate points (Recharts draws stepped lines)
-            const uniquePoints = [];
-            let lastX = -1;
-
-            for (const p of allPoints) {
-                if (Math.abs(p.x - lastX) > 1) {
-                    uniquePoints.push(p);
-                    lastX = p.x;
-                } else if (uniquePoints.length > 0) {
-                    uniquePoints[uniquePoints.length - 1].y = p.y;
-                }
-            }
-
-            console.log('[GPA] Reduced to', uniquePoints.length, 'unique points');
-
-            if (uniquePoints.length < 5) {
-                console.log('[GPA] Not enough unique points');
-                continue;
-            }
-
-            // Get Y-axis bounds - either from labels or from path coordinates
-            let minY, maxY, minPrice, maxPrice;
-
-            if (yAxisLabels.length >= 2) {
-                // Sort by Y coordinate (top to bottom = high price to low price)
-                yAxisLabels.sort((a, b) => a.y - b.y);
-                minY = yAxisLabels[0].y;
-                maxY = yAxisLabels[yAxisLabels.length - 1].y;
-                maxPrice = yAxisLabels[0].price; // Top = highest price
-                minPrice = yAxisLabels[yAxisLabels.length - 1].price; // Bottom = lowest price
-                console.log('[GPA] Y-axis mapping from labels:', { minY, maxY, minPrice, maxPrice });
-            } else {
-                // Fallback: estimate from path bounds and current price
-                const yValues = uniquePoints.map(p => p.y);
-                minY = Math.min(...yValues);
-                maxY = Math.max(...yValues);
-
-                // Try to get current price from page
-                const currentPrice = getCurrentPriceFromPage() || 100;
-                // Assume ±20% price range based on typical variation
-                maxPrice = currentPrice * 1.15;
-                minPrice = currentPrice * 0.85;
-                console.log('[GPA] Y-axis mapping estimated:', { minY, maxY, minPrice, maxPrice, currentPrice });
-            }
-
-            console.log('[GPA] Final Y-axis mapping:', { minY, maxY, minPrice, maxPrice });
-
-            // Map Y coordinates to prices
-            const priceData = uniquePoints.map((p, i) => {
-                const clampedY = Math.max(minY, Math.min(maxY, p.y));
-                const price = maxPrice - ((clampedY - minY) / (maxY - minY)) * (maxPrice - minPrice);
-
-                const date = new Date();
-                const daysBack = Math.round((uniquePoints.length - 1 - i) * (365 / uniquePoints.length));
-                date.setDate(date.getDate() - daysBack);
-
-                return {
-                    date: date.toISOString().split('T')[0],
-                    price: Math.round(price * 100) / 100
-                };
-            });
-
-            console.log('[GPA] Final data:', priceData.length, 'points, range:',
-                Math.min(...priceData.map(p => p.price)), '-', Math.max(...priceData.map(p => p.price)));
-
-            return priceData;
         }
-
-        console.log('[GPA] extractFromVisibleChart returning null');
         return null;
     }
 
+    // Get current price from page
     function getCurrentPriceFromPage() {
         const selectors = [
             '[data-test="product-price"]',
@@ -687,40 +373,54 @@
         return null;
     }
 
+    // Main function to fetch price history
     async function fetchPriceHistory() {
         console.log('[GPA] Starting price history fetch...');
 
-        // Reset captured data
-        capturedPriceData = { allTime: null, threeMonths: null };
-
-        // Step 1: Try extracting from page data first
+        // Step 1: Try extracting from page data first (already loaded)
         let priceData = extractFromPageData();
         if (priceData && priceData.length > 0) {
-            const normalized = normalizeData(priceData);
-            return { allTime: normalized, threeMonths: filterLast3Months(normalized) };
+            return { allTime: normalizeData(priceData), threeMonths: null };
         }
 
-        // Step 2: Expand Preisentwicklung and load both time periods
+        // Step 2: Click Preisentwicklung tab to load data (this also clicks time period tabs)
         await expandPriceHistory();
-        await sleep(500);
 
-        // Step 3: Check captured data
-        if (capturedPriceData.allTime || capturedPriceData.threeMonths) {
-            console.log('[GPA] Using captured data - allTime:', capturedPriceData.allTime?.length, 'threeMonths:', capturedPriceData.threeMonths?.length);
-            return capturedPriceData;
+        // Step 3: Wait a bit more for data to load
+        await sleep(1000);
+
+        // Step 4: Check if we have data from time period tabs
+        if (window._gpaTimeData && (window._gpaTimeData.allTime || window._gpaTimeData.threeMonths)) {
+            console.log('[GPA] Using data from time period tabs');
+            return {
+                allTime: window._gpaTimeData.allTime,
+                threeMonths: window._gpaTimeData.threeMonths
+            };
         }
 
-        // Step 4: Try extracting from DOM
+        // Step 5: Try extracting from the visible price text
         priceData = extractFromPriceText();
         if (priceData && priceData.length > 0) {
             console.log('[GPA] Got data from price text');
-            return { allTime: priceData, threeMonths: filterLast3Months(priceData) };
+            return { allTime: priceData, threeMonths: null };
         }
 
+        // Step 6: Try extracting from visible chart
         priceData = extractFromVisibleChart();
         if (priceData && priceData.length > 0) {
-            const normalized = normalizeData(priceData);
-            return { allTime: normalized, threeMonths: filterLast3Months(normalized) };
+            return { allTime: normalizeData(priceData), threeMonths: null };
+        }
+
+        // Step 7: Try extracting from page data again
+        priceData = extractFromPageData();
+        if (priceData && priceData.length > 0) {
+            return { allTime: normalizeData(priceData), threeMonths: null };
+        }
+
+        // Step 8: Try API fetch
+        priceData = await fetchFromAPI();
+        if (priceData && priceData.length > 0) {
+            return { allTime: normalizeData(priceData), threeMonths: null };
         }
 
         console.log('[GPA] No price history found');
@@ -731,8 +431,8 @@
         if (!Array.isArray(data)) return null;
         return data.map(item => ({
             date: item.date || item.Date || new Date().toISOString().split('T')[0],
-            price: parseFloat(item.price?.amountIncl || item.price?.amount || item.price || item.Price || item.amountIncl || 0)
-        })).filter(item => item.price > 0).sort((a, b) => new Date(a.date) - new Date(b.date));
+            price: parseFloat(item.price?.amountIncl || item.price?.amount || item.price || item.Price || 0)
+        })).filter(item => item.price > 0);
     }
 
     function generateSimulatedData(currentPrice, months = 12) {
@@ -772,11 +472,9 @@
     }
 
     function filterLast3Months(data) {
-        if (!data || data.length === 0) return null;
         const threeMonthsAgo = new Date();
         threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
-        const filtered = data.filter(item => new Date(item.date) >= threeMonthsAgo);
-        return filtered.length > 1 ? filtered : null;
+        return data.filter(item => new Date(item.date) >= threeMonthsAgo);
     }
 
     function createChart(data, containerId) {
@@ -821,20 +519,18 @@
     function renderContent(dataObj, isSimulated) {
         const content = panel.querySelector('.gpa-content');
 
+        // Handle both old format (array) and new format (object with allTime/threeMonths)
         let allTimeData = null;
         let threeMonthsData = null;
 
         if (Array.isArray(dataObj)) {
+            // Old format: single array
             allTimeData = dataObj;
             threeMonthsData = filterLast3Months(dataObj);
         } else if (dataObj && typeof dataObj === 'object') {
+            // New format: object with allTime and threeMonths
             allTimeData = dataObj.allTime;
-            threeMonthsData = dataObj.threeMonths;
-
-            // If we only have allTime, derive 3 months from it
-            if (allTimeData && !threeMonthsData) {
-                threeMonthsData = filterLast3Months(allTimeData);
-            }
+            threeMonthsData = dataObj.threeMonths || (allTimeData ? filterLast3Months(allTimeData) : null);
         }
 
         if ((!allTimeData || allTimeData.length === 0) && (!threeMonthsData || threeMonthsData.length === 0)) {
@@ -842,6 +538,7 @@
             return;
         }
 
+        // Use allTime for statistics, fall back to threeMonths if not available
         const primaryData = allTimeData && allTimeData.length > 0 ? allTimeData : threeMonthsData;
         const stats = calculateStats(primaryData);
         const stats3m = threeMonthsData && threeMonthsData.length > 1 ? calculateStats(threeMonthsData) : stats;
@@ -850,21 +547,18 @@
         const trendClass = stats.trend > 0 ? 'warning' : stats.trend < 0 ? 'highlight' : '';
         const statClass = stats.pricePosition < 30 ? 'highlight' : stats.pricePosition > 70 ? 'warning' : '';
 
+        // Build chart sections
         let chartHtml = '';
-
-        // 3 Months chart first
         if (threeMonthsData && threeMonthsData.length > 1) {
             chartHtml += `
                 <div class="gpa-section-title">Last 3 Months</div>
-                <div class="gpa-chart-container"><div class="gpa-chart-title">Recent trend (${threeMonthsData.length} points)</div><div id="gpa-chart-3m" class="gpa-chart"></div></div>
+                <div class="gpa-chart-container"><div class="gpa-chart-title">Recent price trend</div><div id="gpa-chart-3m" class="gpa-chart"></div></div>
             `;
         }
-
-        // All Time chart second
         if (allTimeData && allTimeData.length > 1) {
             chartHtml += `
                 <div class="gpa-section-title">All Time</div>
-                <div class="gpa-chart-container"><div class="gpa-chart-title">Full history (${allTimeData.length} points)</div><div id="gpa-chart-all" class="gpa-chart"></div></div>
+                <div class="gpa-chart-container"><div class="gpa-chart-title">Full price history (${allTimeData.length} data points)</div><div id="gpa-chart-all" class="gpa-chart"></div></div>
             `;
         }
 
@@ -885,6 +579,7 @@
             </div>
         `;
 
+        // Render charts after DOM is updated
         setTimeout(() => {
             if (threeMonthsData && threeMonthsData.length > 1) {
                 createChart(threeMonthsData, 'gpa-chart-3m');
@@ -903,6 +598,7 @@
         let data = await fetchPriceHistory();
         let simulated = false;
 
+        // Check if we have any data in the new format
         const hasData = data && (
             (data.allTime && data.allTime.length > 0) ||
             (data.threeMonths && data.threeMonths.length > 0) ||
@@ -923,9 +619,6 @@
         if (panel) {
             panel.remove();
         }
-
-        // Reset captured data for new product
-        capturedPriceData = { allTime: null, threeMonths: null };
 
         panel = document.createElement('div');
         panel.className = 'gpa-panel visible';
@@ -956,7 +649,6 @@
 
         if (isProductPage() && productId !== currentProductId) {
             currentProductId = productId;
-            capturedPriceData = { allTime: null, threeMonths: null };
             console.log('[GPA] New product detected, creating panel');
             createPanel();
         } else if (!isProductPage() && panel) {
@@ -964,7 +656,6 @@
             panel.remove();
             panel = null;
             currentProductId = null;
-            capturedPriceData = { allTime: null, threeMonths: null };
         }
     }
 
@@ -975,13 +666,42 @@
         if (currentUrl !== lastUrl) {
             console.log('[GPA] URL changed:', currentUrl);
             lastUrl = currentUrl;
-            capturedPriceData = { allTime: null, threeMonths: null };
-            setTimeout(checkAndInit, 500);
+            setTimeout(checkAndInit, 500); // Wait for page to update
         }
+    }
+
+    // Watch for DOM changes that might indicate price data loaded
+    function watchForPriceData() {
+        const observer = new MutationObserver((mutations) => {
+            for (const mutation of mutations) {
+                if (mutation.type === 'childList') {
+                    const addedNodes = Array.from(mutation.addedNodes);
+                    for (const node of addedNodes) {
+                        if (node.nodeType === 1) {
+                            const text = node.textContent || '';
+                            if (text.includes('Preisentwicklung') || text.includes('priceHistory')) {
+                                console.log('[GPA] Price data might be available, reloading...');
+                                setTimeout(loadPriceData, 500);
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        observer.observe(document.body, { childList: true, subtree: true });
     }
 
     // Initialize
     console.log('[GPA] Galaxus Price Analyzer starting...');
+
+    // Initial check
     checkAndInit();
+
+    // Watch for URL changes every 500ms (for SPA navigation)
     setInterval(watchUrlChanges, 500);
+
+    // Watch for price data appearing in DOM
+    watchForPriceData();
 })();
