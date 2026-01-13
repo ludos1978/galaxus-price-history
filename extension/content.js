@@ -2,51 +2,73 @@
 (function() {
     'use strict';
 
+    let currentProductId = null;
+    let panel = null;
+
     // Extract product ID from URL
     function getProductId() {
-        const match = window.location.pathname.match(/(\d+)(?:\?|$)/);
+        const match = window.location.pathname.match(/-(\d+)$/);
         return match ? match[1] : null;
-    }
-
-    // Get site domain
-    function getSiteDomain() {
-        return window.location.hostname;
     }
 
     // Click and expand the Preisentwicklung section
     async function expandPriceHistory() {
         console.log('[GPA] Looking for Preisentwicklung tab...');
 
-        // Find all clickable elements and look for price-related text
-        const allClickable = document.querySelectorAll('button, a, [role="tab"], [role="button"], div[class*="tab" i], span[class*="tab" i]');
+        // Try multiple times as the page might still be loading
+        for (let attempt = 0; attempt < 3; attempt++) {
+            // Find all elements and look for price-related text
+            const allElements = document.querySelectorAll('button, a, [role="tab"], [role="button"], div, span, li');
 
-        for (const el of allClickable) {
-            const text = (el.textContent || '').toLowerCase();
-            if (text.includes('preisentwicklung') || text.includes('price development') || text.includes('preis')) {
-                console.log('[GPA] Found price tab, clicking:', el);
-                el.click();
-                await new Promise(resolve => setTimeout(resolve, 1000));
-                return true;
+            for (const el of allElements) {
+                const text = (el.textContent || '').trim().toLowerCase();
+                // Must be a relatively short text to avoid matching containers
+                if (text.length < 50 && (text === 'preisentwicklung' || text === 'price development')) {
+                    console.log('[GPA] Found Preisentwicklung element, clicking:', el);
+                    el.click();
+                    await sleep(1500);
+                    return true;
+                }
             }
+
+            // Try clicking on elements with specific attributes
+            const tabSelectors = [
+                '[data-test*="price"]',
+                '[data-testid*="price"]',
+                '[class*="Tab"][class*="price" i]',
+                '[class*="tab"][class*="price" i]'
+            ];
+
+            for (const selector of tabSelectors) {
+                const el = document.querySelector(selector);
+                if (el) {
+                    console.log('[GPA] Found price tab via selector:', selector);
+                    el.click();
+                    await sleep(1500);
+                    return true;
+                }
+            }
+
+            await sleep(500);
         }
 
-        // Also try scrolling down to trigger lazy loading of the price section
-        window.scrollBy(0, 500);
-        await new Promise(resolve => setTimeout(resolve, 500));
-
+        console.log('[GPA] Could not find Preisentwicklung tab');
         return false;
+    }
+
+    function sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
     }
 
     // Extract price data from __NEXT_DATA__ or Apollo state
     function extractFromPageData() {
-        // Try __NEXT_DATA__
         const nextDataScript = document.getElementById('__NEXT_DATA__');
         if (nextDataScript) {
             try {
                 const data = JSON.parse(nextDataScript.textContent);
                 const priceHistory = findInObject(data, ['priceHistory', 'PriceHistory', 'priceEvolution', 'priceDevelopment']);
-                if (priceHistory) {
-                    console.log('[GPA] Found price history in __NEXT_DATA__');
+                if (priceHistory && priceHistory.length > 0) {
+                    console.log('[GPA] Found price history in __NEXT_DATA__:', priceHistory.length, 'points');
                     return priceHistory;
                 }
             } catch (e) {
@@ -54,10 +76,10 @@
             }
         }
 
-        // Try Apollo cache (common in GraphQL apps)
+        // Try Apollo cache
         if (window.__APOLLO_STATE__) {
             const priceHistory = findInObject(window.__APOLLO_STATE__, ['priceHistory', 'PriceHistory']);
-            if (priceHistory) {
+            if (priceHistory && priceHistory.length > 0) {
                 console.log('[GPA] Found price history in Apollo state');
                 return priceHistory;
             }
@@ -69,7 +91,6 @@
             const content = script.textContent || '';
             if (content.includes('priceHistory') || content.includes('priceEvolution')) {
                 try {
-                    // Try to extract JSON object containing price data
                     const match = content.match(/"priceHistory"\s*:\s*(\[[^\]]+\])/);
                     if (match) {
                         const parsed = JSON.parse(match[1]);
@@ -78,16 +99,13 @@
                             return parsed;
                         }
                     }
-                } catch (e) {
-                    // Continue searching
-                }
+                } catch (e) {}
             }
         }
 
         return null;
     }
 
-    // Helper to find a key in nested object
     function findInObject(obj, keys, depth = 0) {
         if (depth > 15 || !obj || typeof obj !== 'object') return null;
 
@@ -105,16 +123,15 @@
         return null;
     }
 
-    // Fetch from Galaxus GraphQL API directly
+    // Fetch from Galaxus GraphQL API
     async function fetchFromAPI() {
         const productId = getProductId();
         if (!productId) return null;
 
         console.log('[GPA] Fetching from API for product:', productId);
 
-        // Try the price development endpoint that Galaxus uses
         try {
-            const response = await fetch(`https://${getSiteDomain()}/api/graphql`, {
+            const response = await fetch(`https://${window.location.hostname}/api/graphql`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -123,17 +140,12 @@
                 credentials: 'include',
                 body: JSON.stringify({
                     operationName: "PDP_GET_PRODUCT_DETAILS",
-                    variables: {
-                        productId: parseInt(productId)
-                    },
+                    variables: { productId: parseInt(productId) },
                     query: `query PDP_GET_PRODUCT_DETAILS($productId: Int!) {
                         productDetails: productDetailsV4(productId: $productId) {
                             product {
                                 priceDevelopment {
-                                    priceHistory {
-                                        date
-                                        price { amountIncl amountExcl currency }
-                                    }
+                                    priceHistory { date price { amountIncl } }
                                 }
                             }
                         }
@@ -144,7 +156,6 @@
             if (response.ok) {
                 const data = await response.json();
                 console.log('[GPA] API response:', data);
-
                 const priceHistory = findInObject(data, ['priceHistory']);
                 if (priceHistory) {
                     return priceHistory.map(p => ({
@@ -160,9 +171,8 @@
         return null;
     }
 
-    // Extract data from the visible SVG chart
+    // Extract from visible SVG chart
     function extractFromVisibleChart() {
-        // Wait for chart to be visible and extract data points
         const svgs = document.querySelectorAll('svg');
 
         for (const svg of svgs) {
@@ -171,10 +181,8 @@
                 const d = path.getAttribute('d');
                 if (!d) continue;
 
-                // Look for paths that look like line charts (multiple L commands)
                 const lCount = (d.match(/L/g) || []).length;
                 if (lCount >= 5) {
-                    // Extract coordinates
                     const points = [];
                     const regex = /([ML])\s*([\d.]+)[,\s]+([\d.]+)/g;
                     let match;
@@ -183,17 +191,13 @@
                     }
 
                     if (points.length >= 5) {
-                        // Try to find price scale from text elements
                         const texts = svg.querySelectorAll('text');
                         const prices = [];
                         for (const text of texts) {
-                            const content = text.textContent || '';
-                            const priceMatch = content.match(/([\d'.,]+)/);
+                            const priceMatch = (text.textContent || '').match(/([\d'.,]+)/);
                             if (priceMatch) {
                                 const price = parseFloat(priceMatch[1].replace(/[',]/g, ''));
-                                if (price > 10 && price < 100000) {
-                                    prices.push(price);
-                                }
+                                if (price > 10 && price < 100000) prices.push(price);
                             }
                         }
 
@@ -210,17 +214,13 @@
                                 const price = minPrice + normalizedY * (maxPrice - minPrice);
                                 const date = new Date();
                                 date.setMonth(date.getMonth() - (points.length - 1 - i));
-                                return {
-                                    date: date.toISOString().split('T')[0],
-                                    price: Math.round(price * 100) / 100
-                                };
+                                return { date: date.toISOString().split('T')[0], price: Math.round(price * 100) / 100 };
                             });
                         }
                     }
                 }
             }
         }
-
         return null;
     }
 
@@ -237,8 +237,7 @@
         for (const selector of selectors) {
             const el = document.querySelector(selector);
             if (el) {
-                const text = el.textContent || '';
-                const match = text.match(/([\d',.]+)/);
+                const match = (el.textContent || '').match(/([\d',.]+)/);
                 if (match) {
                     const price = parseFloat(match[1].replace(/[',]/g, '').replace(/\.–$/, ''));
                     if (price > 0) {
@@ -255,17 +254,17 @@
     async function fetchPriceHistory() {
         console.log('[GPA] Starting price history fetch...');
 
-        // Step 1: Try to expand the price history section
-        await expandPriceHistory();
-
-        // Step 2: Try extracting from page data
+        // Step 1: Try extracting from page data first (already loaded)
         let priceData = extractFromPageData();
         if (priceData && priceData.length > 0) {
             return normalizeData(priceData);
         }
 
-        // Step 3: Try API fetch
-        priceData = await fetchFromAPI();
+        // Step 2: Click Preisentwicklung tab to load data
+        await expandPriceHistory();
+
+        // Step 3: Try extracting again after click
+        priceData = extractFromPageData();
         if (priceData && priceData.length > 0) {
             return normalizeData(priceData);
         }
@@ -276,11 +275,16 @@
             return normalizeData(priceData);
         }
 
+        // Step 5: Try API fetch
+        priceData = await fetchFromAPI();
+        if (priceData && priceData.length > 0) {
+            return normalizeData(priceData);
+        }
+
         console.log('[GPA] No price history found');
         return null;
     }
 
-    // Normalize data format
     function normalizeData(data) {
         if (!Array.isArray(data)) return null;
         return data.map(item => ({
@@ -289,7 +293,6 @@
         })).filter(item => item.price > 0);
     }
 
-    // Generate simulated data
     function generateSimulatedData(currentPrice, months = 12) {
         const data = [];
         const now = new Date();
@@ -308,7 +311,6 @@
         return data;
     }
 
-    // Calculate statistics
     function calculateStats(prices) {
         if (!prices || prices.length === 0) return null;
         const values = prices.map(p => p.price);
@@ -324,17 +326,7 @@
         const recentValues = values.slice(-3);
         const trend = recentValues.length >= 2 ? recentValues[recentValues.length - 1] - recentValues[0] : 0;
 
-        return {
-            mean: Math.round(mean * 100) / 100,
-            median: Math.round(median * 100) / 100,
-            stdDev: Math.round(stdDev * 100) / 100,
-            min: Math.round(min * 100) / 100,
-            max: Math.round(max * 100) / 100,
-            current,
-            pricePosition: Math.round(pricePosition),
-            trend: Math.round(trend * 100) / 100,
-            count: n
-        };
+        return { mean: Math.round(mean * 100) / 100, median: Math.round(median * 100) / 100, stdDev: Math.round(stdDev * 100) / 100, min: Math.round(min * 100) / 100, max: Math.round(max * 100) / 100, current, pricePosition: Math.round(pricePosition), trend: Math.round(trend * 100) / 100, count: n };
     }
 
     function filterLast3Months(data) {
@@ -347,8 +339,8 @@
         const container = document.getElementById(containerId);
         if (!container || !data || data.length === 0) return;
 
-        const width = container.clientWidth || 360;
-        const height = 120;
+        const width = container.clientWidth || 340;
+        const height = 100;
         const padding = { top: 10, right: 10, bottom: 25, left: 45 };
         const prices = data.map(d => d.price);
         const minPrice = Math.min(...prices) * 0.95;
@@ -358,26 +350,17 @@
         const yScale = (p) => height - padding.bottom - ((p - minPrice) / (maxPrice - minPrice)) * (height - padding.top - padding.bottom);
 
         let pathD = `M ${xScale(0)} ${yScale(data[0].price)}`;
-        for (let i = 1; i < data.length; i++) {
-            pathD += ` L ${xScale(i)} ${yScale(data[i].price)}`;
-        }
+        for (let i = 1; i < data.length; i++) pathD += ` L ${xScale(i)} ${yScale(data[i].price)}`;
         let areaD = pathD + ` L ${xScale(data.length - 1)} ${height - padding.bottom} L ${xScale(0)} ${height - padding.bottom} Z`;
 
         container.innerHTML = `
-            <svg width="${width}" height="${height}" class="gpa-chart">
-                <defs>
-                    <linearGradient id="grad${containerId}" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stop-color="#1a1a2e" stop-opacity="0.3"/>
-                        <stop offset="100%" stop-color="#1a1a2e" stop-opacity="0.05"/>
-                    </linearGradient>
-                </defs>
+            <svg width="${width}" height="${height}">
+                <defs><linearGradient id="grad${containerId}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#1a1a2e" stop-opacity="0.3"/><stop offset="100%" stop-color="#1a1a2e" stop-opacity="0.05"/></linearGradient></defs>
                 <path d="${areaD}" fill="url(#grad${containerId})"/>
                 <path d="${pathD}" fill="none" stroke="#1a1a2e" stroke-width="2"/>
                 <circle cx="${xScale(data.length - 1)}" cy="${yScale(data[data.length - 1].price)}" r="4" fill="#1a1a2e"/>
                 <text x="${padding.left - 5}" y="${yScale(maxPrice) + 4}" text-anchor="end" font-size="10" fill="#888">CHF ${maxPrice.toFixed(0)}</text>
                 <text x="${padding.left - 5}" y="${yScale(minPrice) + 4}" text-anchor="end" font-size="10" fill="#888">CHF ${minPrice.toFixed(0)}</text>
-                <text x="${xScale(0)}" y="${height - 5}" text-anchor="start" font-size="10" fill="#888">${data[0].date.substring(5)}</text>
-                <text x="${xScale(data.length - 1)}" y="${height - 5}" text-anchor="end" font-size="10" fill="#888">${data[data.length - 1].date.substring(5)}</text>
             </svg>
         `;
     }
@@ -391,10 +374,10 @@
         return { type: 'neutral', text: `Near average price (${diff >= 0 ? '+' : ''}${diff.toFixed(1)}%).` };
     }
 
-    function renderContent(panel, data, isSimulated) {
+    function renderContent(data, isSimulated) {
         const content = panel.querySelector('.gpa-content');
         if (!data || data.length === 0) {
-            content.innerHTML = `<div class="gpa-no-data">No price history data found. Try expanding "Preisentwicklung" manually.</div>`;
+            content.innerHTML = `<div class="gpa-no-data">No price history data found. Try clicking "Preisentwicklung" tab on the page.</div>`;
             return;
         }
 
@@ -407,62 +390,49 @@
         const statClass = stats.pricePosition < 30 ? 'highlight' : stats.pricePosition > 70 ? 'warning' : '';
 
         content.innerHTML = `
-            ${isSimulated ? `<div class="gpa-no-data" style="margin-bottom:15px;background:#e3f2fd;color:#1565c0;">Estimated data. Click "Preisentwicklung" tab for real data.</div>` : ''}
+            ${isSimulated ? `<div class="gpa-no-data" style="margin-bottom:12px;background:#e3f2fd;color:#1565c0;font-size:12px;">Estimated data. Click "Preisentwicklung" for real data.</div>` : ''}
             <div class="gpa-stats">
-                <div class="gpa-stat ${statClass}">
-                    <div class="gpa-stat-label">Current</div>
-                    <div class="gpa-stat-value">CHF ${stats.current.toFixed(2)}</div>
-                    <div class="gpa-stat-sub">${stats.pricePosition}% of range</div>
-                </div>
-                <div class="gpa-stat">
-                    <div class="gpa-stat-label">Average</div>
-                    <div class="gpa-stat-value">CHF ${stats.mean.toFixed(2)}</div>
-                    <div class="gpa-stat-sub">${stats.count} data points</div>
-                </div>
-                <div class="gpa-stat">
-                    <div class="gpa-stat-label">Median</div>
-                    <div class="gpa-stat-value">CHF ${stats.median.toFixed(2)}</div>
-                </div>
-                <div class="gpa-stat ${trendClass}">
-                    <div class="gpa-stat-label">Trend</div>
-                    <div class="gpa-stat-value">${trendIcon} ${Math.abs(stats.trend).toFixed(2)}</div>
-                </div>
-                <div class="gpa-stat">
-                    <div class="gpa-stat-label">Lowest</div>
-                    <div class="gpa-stat-value">CHF ${stats.min.toFixed(2)}</div>
-                </div>
-                <div class="gpa-stat">
-                    <div class="gpa-stat-label">Highest</div>
-                    <div class="gpa-stat-value">CHF ${stats.max.toFixed(2)}</div>
-                </div>
-                <div class="gpa-stat" style="grid-column:span 2">
-                    <div class="gpa-stat-label">Std. Deviation</div>
-                    <div class="gpa-stat-value">CHF ${stats.stdDev.toFixed(2)}</div>
-                </div>
+                <div class="gpa-stat ${statClass}"><div class="gpa-stat-label">Current</div><div class="gpa-stat-value">CHF ${stats.current.toFixed(2)}</div><div class="gpa-stat-sub">${stats.pricePosition}% of range</div></div>
+                <div class="gpa-stat"><div class="gpa-stat-label">Average</div><div class="gpa-stat-value">CHF ${stats.mean.toFixed(2)}</div><div class="gpa-stat-sub">${stats.count} points</div></div>
+                <div class="gpa-stat"><div class="gpa-stat-label">Median</div><div class="gpa-stat-value">CHF ${stats.median.toFixed(2)}</div></div>
+                <div class="gpa-stat ${trendClass}"><div class="gpa-stat-label">Trend</div><div class="gpa-stat-value">${trendIcon} ${Math.abs(stats.trend).toFixed(2)}</div></div>
+                <div class="gpa-stat"><div class="gpa-stat-label">Lowest</div><div class="gpa-stat-value">CHF ${stats.min.toFixed(2)}</div></div>
+                <div class="gpa-stat"><div class="gpa-stat-label">Highest</div><div class="gpa-stat-value">CHF ${stats.max.toFixed(2)}</div></div>
             </div>
-            <div class="gpa-section-title">All-Time</div>
+            <div class="gpa-section-title">Price History</div>
             <div class="gpa-chart-container"><div id="gpa-chart-all"></div></div>
-            ${last3m.length > 1 ? `
-                <div class="gpa-section-title">Last 3 Months</div>
-                <div class="gpa-chart-container"><div id="gpa-chart-3m"></div></div>
-            ` : ''}
             <div class="gpa-recommendation">
                 <div class="gpa-recommendation-title">${rec.type === 'good' ? '✓ Good Time to Buy' : rec.type === 'decent' ? '✓ Decent Price' : rec.type === 'wait' ? '⚠ Consider Waiting' : rec.type === 'caution' ? '⚠ Above Average' : '→ Average Price'}</div>
                 <div class="gpa-recommendation-text">${rec.text}</div>
             </div>
         `;
 
-        setTimeout(() => {
-            createChart(data, 'gpa-chart-all');
-            if (last3m.length > 1) createChart(last3m, 'gpa-chart-3m');
-        }, 50);
+        setTimeout(() => createChart(data, 'gpa-chart-all'), 50);
     }
 
-    async function createUI() {
-        if (document.querySelector('.gpa-panel')) return;
+    async function loadPriceData() {
+        if (!panel) return;
 
-        // Create panel that shows automatically
-        const panel = document.createElement('div');
+        panel.querySelector('.gpa-content').innerHTML = `<div class="gpa-loading"><div class="spinner"></div>Analyzing price history...</div>`;
+
+        let data = await fetchPriceHistory();
+        let simulated = false;
+        if (!data || data.length === 0) {
+            const price = getCurrentPriceFromPage();
+            if (price) {
+                data = generateSimulatedData(price);
+                simulated = true;
+            }
+        }
+        renderContent(data, simulated);
+    }
+
+    function createPanel() {
+        if (panel) {
+            panel.remove();
+        }
+
+        panel = document.createElement('div');
         panel.className = 'gpa-panel visible';
         panel.innerHTML = `
             <div class="gpa-header">
@@ -475,49 +445,75 @@
         `;
 
         document.body.appendChild(panel);
+        panel.querySelector('.gpa-close').addEventListener('click', () => panel.classList.remove('visible'));
 
-        // Close button
-        panel.querySelector('.gpa-close').addEventListener('click', () => {
-            panel.classList.remove('visible');
-        });
-
-        // Auto-fetch and display data
-        console.log('[GPA] Auto-loading price analysis...');
-        let data = await fetchPriceHistory();
-        let simulated = false;
-        if (!data || data.length === 0) {
-            const price = getCurrentPriceFromPage();
-            if (price) {
-                data = generateSimulatedData(price);
-                simulated = true;
-            }
-        }
-        renderContent(panel, data, simulated);
+        loadPriceData();
     }
 
     function isProductPage() {
         const path = window.location.pathname;
-        // Match product URLs: /xx/s1/product/name-12345 (must have /product/ and end with number)
         return /\/product\/.*-(\d+)$/.test(path) || /\/product\/.*\/(\d+)$/.test(path);
     }
 
-    function init() {
-        console.log('[GPA] Extension loaded on:', window.location.href);
-        console.log('[GPA] Is product page:', isProductPage());
+    function checkAndInit() {
+        const productId = getProductId();
+        console.log('[GPA] Checking page, product ID:', productId, 'current:', currentProductId);
 
-        if (isProductPage()) {
-            console.log('[GPA] Creating UI for product:', getProductId());
-            createUI();
-        } else {
-            console.log('[GPA] Not a product page, skipping UI');
+        if (isProductPage() && productId !== currentProductId) {
+            currentProductId = productId;
+            console.log('[GPA] New product detected, creating panel');
+            createPanel();
+        } else if (!isProductPage() && panel) {
+            console.log('[GPA] Left product page, removing panel');
+            panel.remove();
+            panel = null;
+            currentProductId = null;
         }
     }
 
-    // Run immediately
-    console.log('[GPA] Galaxus Price Analyzer starting...');
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', init);
-    } else {
-        init();
+    // Watch for URL changes (SPA navigation)
+    let lastUrl = window.location.href;
+    function watchUrlChanges() {
+        const currentUrl = window.location.href;
+        if (currentUrl !== lastUrl) {
+            console.log('[GPA] URL changed:', currentUrl);
+            lastUrl = currentUrl;
+            setTimeout(checkAndInit, 500); // Wait for page to update
+        }
     }
+
+    // Watch for DOM changes that might indicate price data loaded
+    function watchForPriceData() {
+        const observer = new MutationObserver((mutations) => {
+            for (const mutation of mutations) {
+                if (mutation.type === 'childList') {
+                    const addedNodes = Array.from(mutation.addedNodes);
+                    for (const node of addedNodes) {
+                        if (node.nodeType === 1) {
+                            const text = node.textContent || '';
+                            if (text.includes('Preisentwicklung') || text.includes('priceHistory')) {
+                                console.log('[GPA] Price data might be available, reloading...');
+                                setTimeout(loadPriceData, 500);
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        observer.observe(document.body, { childList: true, subtree: true });
+    }
+
+    // Initialize
+    console.log('[GPA] Galaxus Price Analyzer starting...');
+
+    // Initial check
+    checkAndInit();
+
+    // Watch for URL changes every 500ms (for SPA navigation)
+    setInterval(watchUrlChanges, 500);
+
+    // Watch for price data appearing in DOM
+    watchForPriceData();
 })();
