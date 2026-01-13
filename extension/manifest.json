@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Galaxus Price Analyzer",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "Analyze price history on Galaxus/Digitec - shows average, median, std deviation and charts",
   "author": "Galaxus Price History Project",
   "homepage_url": "https://github.com/ludos1978/galaxus-price-history",
