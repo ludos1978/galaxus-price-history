@@ -131,7 +131,7 @@
         // Scroll button into view to trigger lazy loading
         console.log('[GPA] Scrolling to Preisentwicklung to trigger lazy load...');
         button.scrollIntoView({ behavior: 'auto', block: 'center' });
-        await sleep(300);
+        await sleep(500);
 
         const isExpanded = button.getAttribute('aria-expanded') === 'true';
         console.log('[GPA] Button expanded:', isExpanded);
@@ -139,11 +139,20 @@
         if (!isExpanded) {
             console.log('[GPA] Clicking to expand...');
             button.click();
-            await sleep(1500);
+            await sleep(2000); // Wait longer for content to load
         }
 
-        // Find time period tabs
-        await loadBothTimePeriods(button);
+        // Wait for the chart to potentially render
+        console.log('[GPA] Waiting for chart to render...');
+        await sleep(1500);
+
+        // Try loading both time periods - retry if tabs not found initially
+        for (let retry = 0; retry < 3; retry++) {
+            const success = await loadBothTimePeriods(button);
+            if (success) break;
+            console.log('[GPA] Tabs not found, retrying in 1 second... (attempt', retry + 2, ')');
+            await sleep(1000);
+        }
 
         // Restore scroll position
         window.scrollTo({ top: scrollY, behavior: 'auto' });
@@ -152,27 +161,52 @@
     }
 
     async function loadBothTimePeriods(button) {
-        // Find the expanded content area
-        const section = button.closest('section') || button.parentElement?.parentElement?.parentElement;
-        if (!section) {
-            console.log('[GPA] Could not find section for time tabs');
-            return;
+        // Find the expanded content area - try multiple methods
+        let section = button.closest('section') || button.parentElement?.parentElement?.parentElement;
+
+        // Also try to find by price history section helper
+        if (!section || !section.querySelector) {
+            section = findPriceHistorySection();
         }
 
-        // Look for time period buttons
-        const allButtons = section.querySelectorAll('button, [role="tab"], [role="button"]');
+        if (!section) {
+            console.log('[GPA] Could not find section for time tabs');
+            return false;
+        }
+
+        // Look for time period buttons in the section and in the whole document as fallback
+        let allButtons = section.querySelectorAll('button, [role="tab"], [role="button"]');
+
+        // If no buttons in section, search more broadly
+        if (allButtons.length < 2) {
+            // Try finding tabs near the chart
+            const priceSection = findPriceHistorySection();
+            if (priceSection) {
+                allButtons = priceSection.querySelectorAll('button, [role="tab"], [role="button"]');
+            }
+        }
+
         let threeMonthsBtn = null;
         let allTimeBtn = null;
+
+        console.log('[GPA] Searching', allButtons.length, 'buttons for time tabs...');
 
         for (const btn of allButtons) {
             if (btn === button) continue;
             const text = (btn.textContent || '').trim().toLowerCase();
-            console.log('[GPA] Found button:', text);
             if (text.includes('3 monate') || text.includes('3 month') || text === '3m' || text === '3') {
+                console.log('[GPA] Found 3-month button:', text);
                 threeMonthsBtn = btn;
             } else if (text.includes('alles') || text.includes('all') || text === 'max' || text.includes('alle')) {
+                console.log('[GPA] Found all-time button:', text);
                 allTimeBtn = btn;
             }
+        }
+
+        // Return false if we didn't find the tabs
+        if (!threeMonthsBtn && !allTimeBtn) {
+            console.log('[GPA] No time period tabs found');
+            return false;
         }
 
         // Load "Alles" (all time) first
@@ -181,9 +215,11 @@
             currentTimePeriod = 'alltime';
             allTimeBtn.click();
 
-            // Wait and retry extraction multiple times
-            for (let attempt = 0; attempt < 3; attempt++) {
-                await sleep(1000);
+            // Wait longer and retry extraction multiple times
+            // The chart takes time to render after clicking
+            for (let attempt = 0; attempt < 5; attempt++) {
+                await sleep(1500); // Wait 1.5 seconds between attempts
+                console.log('[GPA] All-time extraction attempt', attempt + 1);
                 if (!capturedPriceData.allTime) {
                     const extracted = extractFromVisibleChart() || extractFromPriceText();
                     if (extracted) {
@@ -192,6 +228,7 @@
                         break;
                     }
                 } else {
+                    console.log('[GPA] All-time data already captured from network');
                     break;
                 }
             }
@@ -203,8 +240,9 @@
             currentTimePeriod = '3months';
             threeMonthsBtn.click();
 
-            for (let attempt = 0; attempt < 3; attempt++) {
-                await sleep(1000);
+            for (let attempt = 0; attempt < 5; attempt++) {
+                await sleep(1500);
+                console.log('[GPA] 3-month extraction attempt', attempt + 1);
                 if (!capturedPriceData.threeMonths) {
                     const extracted = extractFromVisibleChart() || extractFromPriceText();
                     if (extracted) {
@@ -213,6 +251,7 @@
                         break;
                     }
                 } else {
+                    console.log('[GPA] 3-month data already captured from network');
                     break;
                 }
             }
@@ -220,6 +259,7 @@
 
         // Reset time period tracker
         currentTimePeriod = null;
+        return true;
     }
 
     function extractFromPageData() {
@@ -265,12 +305,80 @@
         return null;
     }
 
-    function extractFromPriceText() {
-        const textEl = document.querySelector('.yAa8UXh') ||
-                       document.querySelector('[class*="priceDescription"]') ||
-                       document.querySelector('#priceHistoryBlock + div p');
+    // Helper to find the price history section container
+    function findPriceHistorySection() {
+        // Try various selectors to find the price history section
 
-        if (!textEl) return null;
+        // Method 1: Find by known class
+        let section = document.querySelector('.ypBxcVsA');
+        if (section) {
+            console.log('[GPA] Found section by .ypBxcVsA');
+            return section;
+        }
+
+        // Method 2: Find the expanded priceHistoryBlock content
+        const priceBlock = document.querySelector('#priceHistoryBlock[aria-expanded="true"]') ||
+                          document.querySelector('[data-test="priceHistoryBlock"][aria-expanded="true"]');
+        if (priceBlock) {
+            // Look for sibling or child content area
+            const parent = priceBlock.closest('section') || priceBlock.parentElement;
+            if (parent) {
+                // Find the content area that contains the chart
+                const content = parent.querySelector('.recharts-wrapper')?.closest('div') ||
+                               parent.querySelector('[class*="content"]') ||
+                               parent.querySelector('svg')?.parentElement;
+                if (content) {
+                    console.log('[GPA] Found section via priceHistoryBlock parent');
+                    return content.closest('div[class]') || parent;
+                }
+            }
+        }
+
+        // Method 3: Find by text content "Preisentwicklung" and get expanded content
+        const allButtons = document.querySelectorAll('button, [role="button"]');
+        for (const btn of allButtons) {
+            if ((btn.textContent || '').trim() === 'Preisentwicklung' &&
+                btn.getAttribute('aria-expanded') === 'true') {
+                const parent = btn.closest('section') || btn.parentElement?.parentElement;
+                if (parent) {
+                    console.log('[GPA] Found section via Preisentwicklung button');
+                    return parent;
+                }
+            }
+        }
+
+        // Method 4: Find any section containing recharts
+        const rechartsWrapper = document.querySelector('.recharts-wrapper');
+        if (rechartsWrapper) {
+            const section = rechartsWrapper.closest('section') ||
+                           rechartsWrapper.closest('[class*="price"]') ||
+                           rechartsWrapper.parentElement?.parentElement;
+            if (section) {
+                console.log('[GPA] Found section via recharts-wrapper');
+                return section;
+            }
+        }
+
+        console.log('[GPA] Could not find price history section');
+        return null;
+    }
+
+    function extractFromPriceText() {
+        // First find the price history section
+        const priceSection = findPriceHistorySection();
+        console.log('[GPA] extractFromPriceText - priceSection found:', !!priceSection);
+
+        if (!priceSection) return null;
+
+        // Look for price text paragraph WITHIN the price section
+        const textEl = priceSection.querySelector('p') ||
+                       priceSection.querySelector('[class*="description"]') ||
+                       priceSection.querySelector('[class*="text"]');
+
+        if (!textEl) {
+            console.log('[GPA] No text element found in price section');
+            return null;
+        }
 
         const text = textEl.textContent || '';
         console.log('[GPA] Found price text:', text.substring(0, 100));
@@ -321,14 +429,14 @@
     function extractFromVisibleChart() {
         console.log('[GPA] extractFromVisibleChart called');
 
-        // Try multiple ways to find the chart container
-        const priceSection = document.querySelector('.ypBxcVsA') ||
-                            document.querySelector('.ymYoVPb') ||
-                            document.querySelector('.recharts-responsive-container')?.parentElement ||
-                            document.querySelector('#priceHistoryBlock')?.closest('section') ||
-                            document.querySelector('[data-test="priceHistoryBlock"]')?.closest('section');
+        // Use the helper to find the price section
+        const priceSection = findPriceHistorySection();
+        console.log('[GPA] extractFromVisibleChart - priceSection:', !!priceSection);
 
-        console.log('[GPA] Price section found:', !!priceSection);
+        // Log what's on the page for debugging
+        const allSvgs = document.querySelectorAll('svg');
+        const rechartsSvgs = document.querySelectorAll('.recharts-surface');
+        console.log('[GPA] Total SVGs on page:', allSvgs.length, 'Recharts SVGs:', rechartsSvgs.length);
 
         const container = priceSection || document.body;
 
@@ -341,7 +449,7 @@
             svgs = container.querySelectorAll('svg');
         }
 
-        console.log('[GPA] Found', svgs.length, 'SVGs');
+        console.log('[GPA] Found', svgs.length, 'SVGs in container');
 
         for (const svg of svgs) {
             console.log('[GPA] Checking SVG with class:', svg.className);
