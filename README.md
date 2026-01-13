@@ -1,1 +1,3 @@
 # galaxus-price-history
+
+create a browser (plugin or if possible something smaller) that from a product like this (https://www.galaxus.ch/de/s1/product/gigabyte-aorus-fi32u-3840-x-2160-pixel-3150-monitor-16714676) reads the price history and creates a average, mean, deviation values and possibly a small graphic of the price development over the last 3 months and over the lifetime (read the preisentwicklung value for that)! what technology would you suggest. is it possible to make it only a javascript that can be activated or similar or does it need a full browser plugin? how can i make the browser plugin available for other people as well. it needs minimal installation and delivery work!
