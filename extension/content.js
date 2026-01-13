@@ -80,27 +80,53 @@
         // Store data from each period
         window._gpaTimeData = { threeMonths: null, allTime: null };
 
-        // Find all buttons/tabs in the price history section
-        const priceHistorySection = document.querySelector('#priceHistoryBlock')?.parentElement?.parentElement ||
-                                    document.querySelector('[data-test="priceHistoryBlock"]')?.parentElement?.parentElement;
+        // Try multiple ways to find the price history section
+        let priceHistorySection = document.querySelector('#priceHistoryBlock')?.closest('section') ||
+                                  document.querySelector('[data-test="priceHistoryBlock"]')?.closest('section') ||
+                                  document.querySelector('#priceHistoryBlock')?.parentElement?.parentElement?.parentElement ||
+                                  document.querySelector('.recharts-wrapper')?.closest('section');
 
-        if (!priceHistorySection) {
-            console.log('[GPA] Could not find price history section for tabs');
-            return;
+        // Log what we found
+        console.log('[GPA] Price history section found:', !!priceHistorySection);
+
+        // Search for tabs - first in section, then globally
+        let buttons = [];
+        if (priceHistorySection) {
+            buttons = Array.from(priceHistorySection.querySelectorAll('button, [role="tab"], [role="button"]'));
+            console.log('[GPA] Found', buttons.length, 'buttons in price section');
         }
 
-        // Look for tab buttons - they typically contain "3 Monate" or "Alles"
-        const buttons = priceHistorySection.querySelectorAll('button, [role="tab"], [role="button"]');
+        // If no buttons in section or section not found, search globally near the price chart
+        if (buttons.length < 2) {
+            // Find all buttons on page that might be time tabs
+            const allButtons = document.querySelectorAll('button, [role="tab"], [role="button"]');
+            console.log('[GPA] Searching all', allButtons.length, 'buttons on page');
+            buttons = Array.from(allButtons);
+        }
+
         let threeMonthsBtn = null;
         let allTimeBtn = null;
 
         for (const btn of buttons) {
             const text = (btn.textContent || '').trim().toLowerCase();
-            if (text.includes('3 monate') || text.includes('3 month') || text === '3m') {
+            // Skip the main Preisentwicklung button
+            if (text === 'preisentwicklung') continue;
+
+            if (text.includes('3 monate') || text.includes('3 month') || text === '3m' || text === '3') {
+                console.log('[GPA] Found 3-month button:', text);
                 threeMonthsBtn = btn;
             } else if (text.includes('alles') || text.includes('all') || text === 'max' || text === 'alle') {
+                console.log('[GPA] Found all-time button:', text);
                 allTimeBtn = btn;
             }
+        }
+
+        // Log if buttons not found
+        if (!allTimeBtn) {
+            console.log('[GPA] WARNING: "Alles" button NOT found!');
+        }
+        if (!threeMonthsBtn) {
+            console.log('[GPA] WARNING: "3 Monate" button NOT found!');
         }
 
         // Click "Alles" first to get full history
@@ -108,20 +134,8 @@
             console.log('[GPA] Clicking "Alles" tab...');
             allTimeBtn.click();
 
-            // Wait for tab to become active and chart to update
-            await sleep(500);
-
-            // Wait until the tab shows as selected/active
-            for (let i = 0; i < 5; i++) {
-                const isActive = allTimeBtn.classList.contains('active') ||
-                                allTimeBtn.getAttribute('aria-selected') === 'true' ||
-                                allTimeBtn.getAttribute('data-state') === 'active';
-                if (isActive) break;
-                await sleep(300);
-            }
-
-            // Wait for chart to fully render with new data
-            await sleep(1500);
+            // Wait for chart to update
+            await sleep(2500);
 
             // Extract and store "all time" data
             console.log('[GPA] Extracting all-time data...');
@@ -134,37 +148,13 @@
             console.log('[GPA] Clicking "3 Monate" tab...');
             threeMonthsBtn.click();
 
-            // Wait for tab to become active and chart to update
-            await sleep(500);
-
-            // Wait until the tab shows as selected/active
-            for (let i = 0; i < 5; i++) {
-                const isActive = threeMonthsBtn.classList.contains('active') ||
-                                threeMonthsBtn.getAttribute('aria-selected') === 'true' ||
-                                threeMonthsBtn.getAttribute('data-state') === 'active';
-                if (isActive) break;
-                await sleep(300);
-            }
-
-            // Wait for chart to fully render with new data
-            await sleep(1500);
+            // Wait for chart to update
+            await sleep(2500);
 
             // Extract and store "3 months" data
             console.log('[GPA] Extracting 3-month data...');
             window._gpaTimeData.threeMonths = extractFromVisibleChart() || extractFromPriceText();
             console.log('[GPA] 3-month data points:', window._gpaTimeData.threeMonths?.length || 0);
-        }
-
-        // If no tabs found, try looking for segmented control or similar
-        if (!threeMonthsBtn && !allTimeBtn) {
-            console.log('[GPA] No time period tabs found, looking for alternatives...');
-            const allButtons = document.querySelectorAll('button, [role="tab"]');
-            for (const btn of allButtons) {
-                const text = (btn.textContent || '').trim();
-                if (/^(3\s*M|3\s*Monate|Alles|All|Max)$/i.test(text)) {
-                    console.log('[GPA] Found time button:', text);
-                }
-            }
         }
     }
 
