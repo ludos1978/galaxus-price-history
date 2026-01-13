@@ -1,0 +1,1 @@
+# galaxus-price-history
