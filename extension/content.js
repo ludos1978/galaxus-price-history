@@ -458,49 +458,41 @@
         }, 50);
     }
 
-    function createUI() {
-        if (document.querySelector('.gpa-button')) return;
+    async function createUI() {
+        if (document.querySelector('.gpa-panel')) return;
 
-        const button = document.createElement('button');
-        button.className = 'gpa-button';
-        button.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M18 9l-5 5-4-4-3 3"/></svg> Price Analysis`;
-
+        // Create panel that shows automatically
         const panel = document.createElement('div');
-        panel.className = 'gpa-panel';
+        panel.className = 'gpa-panel visible';
         panel.innerHTML = `
             <div class="gpa-header">
-                <h3>Price History Analysis</h3>
+                <h3>Price Analysis</h3>
                 <button class="gpa-close">×</button>
             </div>
             <div class="gpa-content">
-                <div class="gpa-loading"><div class="spinner"></div>Analyzing...</div>
+                <div class="gpa-loading"><div class="spinner"></div>Analyzing price history...</div>
             </div>
         `;
 
-        document.body.appendChild(button);
         document.body.appendChild(panel);
 
-        button.addEventListener('click', async () => {
-            panel.classList.toggle('visible');
-            if (panel.classList.contains('visible')) {
-                panel.querySelector('.gpa-content').innerHTML = `<div class="gpa-loading"><div class="spinner"></div>Analyzing...</div>`;
-                let data = await fetchPriceHistory();
-                let simulated = false;
-                if (!data || data.length === 0) {
-                    const price = getCurrentPriceFromPage();
-                    if (price) {
-                        data = generateSimulatedData(price);
-                        simulated = true;
-                    }
-                }
-                renderContent(panel, data, simulated);
-            }
+        // Close button
+        panel.querySelector('.gpa-close').addEventListener('click', () => {
+            panel.classList.remove('visible');
         });
 
-        panel.querySelector('.gpa-close').addEventListener('click', () => panel.classList.remove('visible'));
-        document.addEventListener('click', (e) => {
-            if (!panel.contains(e.target) && !button.contains(e.target)) panel.classList.remove('visible');
-        });
+        // Auto-fetch and display data
+        console.log('[GPA] Auto-loading price analysis...');
+        let data = await fetchPriceHistory();
+        let simulated = false;
+        if (!data || data.length === 0) {
+            const price = getCurrentPriceFromPage();
+            if (price) {
+                data = generateSimulatedData(price);
+                simulated = true;
+            }
+        }
+        renderContent(panel, data, simulated);
     }
 
     function isProductPage() {
