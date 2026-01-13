@@ -423,9 +423,26 @@
         });
     }
 
+    // Check if this is a product page (URL ends with a number)
+    function isProductPage() {
+        const path = window.location.pathname;
+        // Product pages end with a product ID (number)
+        return /\/\d+$/.test(path) || /\/\d+\?/.test(path + '?');
+    }
+
+    // Initialize only on product pages
+    function init() {
+        if (isProductPage()) {
+            createUI();
+            console.log('[Galaxus Price Analyzer] Loaded on product page');
+        } else {
+            console.log('[Galaxus Price Analyzer] Not a product page, skipping');
+        }
+    }
+
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', createUI);
+        document.addEventListener('DOMContentLoaded', init);
     } else {
-        createUI();
+        init();
     }
 })();
