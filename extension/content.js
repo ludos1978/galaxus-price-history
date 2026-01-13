@@ -496,16 +496,25 @@
     }
 
     function isProductPage() {
-        return /\/\d+$/.test(window.location.pathname);
+        const path = window.location.pathname;
+        // Match URLs ending with a number (product ID)
+        return /\/\d+$/.test(path) || /\/\d+\?/.test(path + '?');
     }
 
     function init() {
+        console.log('[GPA] Extension loaded on:', window.location.href);
+        console.log('[GPA] Is product page:', isProductPage());
+
         if (isProductPage()) {
+            console.log('[GPA] Creating UI for product:', getProductId());
             createUI();
-            console.log('[GPA] Loaded on product page:', getProductId());
+        } else {
+            console.log('[GPA] Not a product page, skipping UI');
         }
     }
 
+    // Run immediately
+    console.log('[GPA] Galaxus Price Analyzer starting...');
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', init);
     } else {

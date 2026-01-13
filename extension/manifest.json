@@ -1,12 +1,16 @@
 {
-  "manifest_version": 3,
+  "manifest_version": 2,
   "name": "Galaxus Price Analyzer",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Analyze price history on Galaxus/Digitec - shows average, median, std deviation and charts",
   "author": "Galaxus Price History Project",
   "homepage_url": "https://github.com/ludos1978/galaxus-price-history",
-  "permissions": [],
-  "host_permissions": [
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "galaxus-price-analyzer@example.com"
+    }
+  },
+  "permissions": [
     "https://www.galaxus.ch/*",
     "https://www.galaxus.de/*",
     "https://www.digitec.ch/*"
@@ -14,18 +18,13 @@
   "content_scripts": [
     {
       "matches": [
-        "https://www.galaxus.ch/*",
-        "https://www.galaxus.de/*",
-        "https://www.digitec.ch/*"
-      ],
-      "exclude_matches": [
-        "https://www.galaxus.ch/*/search*",
-        "https://www.galaxus.de/*/search*",
-        "https://www.digitec.ch/*/search*"
+        "*://www.galaxus.ch/*",
+        "*://www.galaxus.de/*",
+        "*://www.digitec.ch/*"
       ],
       "js": ["content.js"],
       "css": ["styles.css"],
-      "run_at": "document_idle"
+      "run_at": "document_end"
     }
   ]
 }
