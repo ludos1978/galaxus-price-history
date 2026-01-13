@@ -11,6 +11,25 @@
         return match ? match[1] : null;
     }
 
+    // Collapse description and specifications sections to bring price history into view
+    async function collapseOtherSections() {
+        console.log('[GPA] Collapsing other sections to trigger lazy load...');
+
+        const sectionsToCollapse = ['#description', '#specifications', '[data-test="descriptionBlock"]', '[data-test="specificationsBlock"]'];
+
+        for (const selector of sectionsToCollapse) {
+            const section = document.querySelector(selector);
+            if (section) {
+                const isExpanded = section.getAttribute('aria-expanded') === 'true';
+                if (isExpanded) {
+                    console.log('[GPA] Collapsing section:', selector);
+                    section.click();
+                    await sleep(100);
+                }
+            }
+        }
+    }
+
     // Click and expand the Preisentwicklung section
     async function expandPriceHistory() {
         console.log('[GPA] Looking for Preisentwicklung button...');
@@ -21,6 +40,11 @@
                        document.querySelector('button[aria-controls*="priceHistory"]');
 
         if (button) {
+            // First, scroll the button into view to trigger lazy loading
+            console.log('[GPA] Scrolling Preisentwicklung into view...');
+            button.scrollIntoView({ behavior: 'instant', block: 'center' });
+            await sleep(500);
+
             const isExpanded = button.getAttribute('aria-expanded') === 'true';
             console.log('[GPA] Found priceHistoryBlock button, expanded:', isExpanded);
 
@@ -28,29 +52,104 @@
                 console.log('[GPA] Clicking to expand...');
                 button.click();
                 await sleep(2000); // Wait for data to load
-                return true;
             } else {
                 console.log('[GPA] Already expanded');
-                return true;
             }
+
+            // Now click time period tabs to load both datasets
+            await clickTimePeriodTabs();
+
+            // Scroll back to top so user sees the page normally
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+
+            return true;
         }
 
         console.log('[GPA] priceHistoryBlock button not found, trying fallbacks...');
+
+        // Try collapsing other sections first
+        await collapseOtherSections();
+        await sleep(500);
 
         // Fallback: search for text
         const allElements = document.querySelectorAll('button, [role="button"]');
         for (const el of allElements) {
             const text = (el.textContent || '').trim();
             if (text === 'Preisentwicklung') {
-                console.log('[GPA] Found button by text, clicking...');
+                console.log('[GPA] Found button by text, scrolling and clicking...');
+                el.scrollIntoView({ behavior: 'instant', block: 'center' });
+                await sleep(500);
                 el.click();
                 await sleep(2000);
+                await clickTimePeriodTabs();
+                window.scrollTo({ top: 0, behavior: 'smooth' });
                 return true;
             }
         }
 
         console.log('[GPA] Could not find Preisentwicklung button');
         return false;
+    }
+
+    // Click both "3 Monate" and "Alles" tabs to load both time periods
+    async function clickTimePeriodTabs() {
+        console.log('[GPA] Looking for time period tabs...');
+
+        // Store data from each period
+        window._gpaTimeData = { threeMonths: null, allTime: null };
+
+        // Find all buttons/tabs in the price history section
+        const priceHistorySection = document.querySelector('#priceHistoryBlock')?.parentElement?.parentElement ||
+                                    document.querySelector('[data-test="priceHistoryBlock"]')?.parentElement?.parentElement;
+
+        if (!priceHistorySection) {
+            console.log('[GPA] Could not find price history section for tabs');
+            return;
+        }
+
+        // Look for tab buttons - they typically contain "3 Monate" or "Alles"
+        const buttons = priceHistorySection.querySelectorAll('button, [role="tab"], [role="button"]');
+        let threeMonthsBtn = null;
+        let allTimeBtn = null;
+
+        for (const btn of buttons) {
+            const text = (btn.textContent || '').trim().toLowerCase();
+            if (text.includes('3 monate') || text.includes('3 month') || text === '3m') {
+                threeMonthsBtn = btn;
+            } else if (text.includes('alles') || text.includes('all') || text === 'max' || text === 'alle') {
+                allTimeBtn = btn;
+            }
+        }
+
+        // Click "Alles" first to get full history
+        if (allTimeBtn) {
+            console.log('[GPA] Clicking "Alles" tab...');
+            allTimeBtn.click();
+            await sleep(1500);
+            // Extract and store "all time" data
+            window._gpaTimeData.allTime = extractFromVisibleChart() || extractFromPriceText();
+        }
+
+        // Click "3 Monate" to get recent data
+        if (threeMonthsBtn) {
+            console.log('[GPA] Clicking "3 Monate" tab...');
+            threeMonthsBtn.click();
+            await sleep(1500);
+            // Extract and store "3 months" data
+            window._gpaTimeData.threeMonths = extractFromVisibleChart() || extractFromPriceText();
+        }
+
+        // If no tabs found, try looking for segmented control or similar
+        if (!threeMonthsBtn && !allTimeBtn) {
+            console.log('[GPA] No time period tabs found, looking for alternatives...');
+            const allButtons = document.querySelectorAll('button, [role="tab"]');
+            for (const btn of allButtons) {
+                const text = (btn.textContent || '').trim();
+                if (/^(3\s*M|3\s*Monate|Alles|All|Max)$/i.test(text)) {
+                    console.log('[GPA] Found time button:', text);
+                }
+            }
+        }
     }
 
     function sleep(ms) {
@@ -300,38 +399,47 @@
         // Step 1: Try extracting from page data first (already loaded)
         let priceData = extractFromPageData();
         if (priceData && priceData.length > 0) {
-            return normalizeData(priceData);
+            return { allTime: normalizeData(priceData), threeMonths: null };
         }
 
-        // Step 2: Click Preisentwicklung tab to load data
+        // Step 2: Click Preisentwicklung tab to load data (this also clicks time period tabs)
         await expandPriceHistory();
 
         // Step 3: Wait a bit more for data to load
         await sleep(1000);
 
-        // Step 4: Try extracting from the visible price text
+        // Step 4: Check if we have data from time period tabs
+        if (window._gpaTimeData && (window._gpaTimeData.allTime || window._gpaTimeData.threeMonths)) {
+            console.log('[GPA] Using data from time period tabs');
+            return {
+                allTime: window._gpaTimeData.allTime,
+                threeMonths: window._gpaTimeData.threeMonths
+            };
+        }
+
+        // Step 5: Try extracting from the visible price text
         priceData = extractFromPriceText();
         if (priceData && priceData.length > 0) {
             console.log('[GPA] Got data from price text');
-            return priceData;
+            return { allTime: priceData, threeMonths: null };
         }
 
-        // Step 5: Try extracting from visible chart
+        // Step 6: Try extracting from visible chart
         priceData = extractFromVisibleChart();
         if (priceData && priceData.length > 0) {
-            return normalizeData(priceData);
+            return { allTime: normalizeData(priceData), threeMonths: null };
         }
 
-        // Step 6: Try extracting from page data again
+        // Step 7: Try extracting from page data again
         priceData = extractFromPageData();
         if (priceData && priceData.length > 0) {
-            return normalizeData(priceData);
+            return { allTime: normalizeData(priceData), threeMonths: null };
         }
 
-        // Step 7: Try API fetch
+        // Step 8: Try API fetch
         priceData = await fetchFromAPI();
         if (priceData && priceData.length > 0) {
-            return normalizeData(priceData);
+            return { allTime: normalizeData(priceData), threeMonths: null };
         }
 
         console.log('[GPA] No price history found');
@@ -427,20 +535,51 @@
         return { type: 'neutral', text: `Near average price (${diff >= 0 ? '+' : ''}${diff.toFixed(1)}%).` };
     }
 
-    function renderContent(data, isSimulated) {
+    function renderContent(dataObj, isSimulated) {
         const content = panel.querySelector('.gpa-content');
-        if (!data || data.length === 0) {
+
+        // Handle both old format (array) and new format (object with allTime/threeMonths)
+        let allTimeData = null;
+        let threeMonthsData = null;
+
+        if (Array.isArray(dataObj)) {
+            // Old format: single array
+            allTimeData = dataObj;
+            threeMonthsData = filterLast3Months(dataObj);
+        } else if (dataObj && typeof dataObj === 'object') {
+            // New format: object with allTime and threeMonths
+            allTimeData = dataObj.allTime;
+            threeMonthsData = dataObj.threeMonths || (allTimeData ? filterLast3Months(allTimeData) : null);
+        }
+
+        if ((!allTimeData || allTimeData.length === 0) && (!threeMonthsData || threeMonthsData.length === 0)) {
             content.innerHTML = `<div class="gpa-no-data">No price history data found. Try clicking "Preisentwicklung" tab on the page.</div>`;
             return;
         }
 
-        const stats = calculateStats(data);
-        const last3m = filterLast3Months(data);
-        const stats3m = last3m.length > 1 ? calculateStats(last3m) : stats;
+        // Use allTime for statistics, fall back to threeMonths if not available
+        const primaryData = allTimeData && allTimeData.length > 0 ? allTimeData : threeMonthsData;
+        const stats = calculateStats(primaryData);
+        const stats3m = threeMonthsData && threeMonthsData.length > 1 ? calculateStats(threeMonthsData) : stats;
         const rec = getRecommendation(stats3m);
         const trendIcon = stats.trend > 0 ? '↑' : stats.trend < 0 ? '↓' : '→';
         const trendClass = stats.trend > 0 ? 'warning' : stats.trend < 0 ? 'highlight' : '';
         const statClass = stats.pricePosition < 30 ? 'highlight' : stats.pricePosition > 70 ? 'warning' : '';
+
+        // Build chart sections
+        let chartHtml = '';
+        if (threeMonthsData && threeMonthsData.length > 1) {
+            chartHtml += `
+                <div class="gpa-section-title">Last 3 Months</div>
+                <div class="gpa-chart-container"><div class="gpa-chart-title">Recent price trend</div><div id="gpa-chart-3m" class="gpa-chart"></div></div>
+            `;
+        }
+        if (allTimeData && allTimeData.length > 1) {
+            chartHtml += `
+                <div class="gpa-section-title">All Time</div>
+                <div class="gpa-chart-container"><div class="gpa-chart-title">Full price history (${allTimeData.length} data points)</div><div id="gpa-chart-all" class="gpa-chart"></div></div>
+            `;
+        }
 
         content.innerHTML = `
             ${isSimulated ? `<div class="gpa-no-data" style="margin-bottom:12px;background:#e3f2fd;color:#1565c0;font-size:12px;">Estimated data. Click "Preisentwicklung" for real data.</div>` : ''}
@@ -452,15 +591,22 @@
                 <div class="gpa-stat"><div class="gpa-stat-label">Lowest</div><div class="gpa-stat-value">CHF ${stats.min.toFixed(2)}</div></div>
                 <div class="gpa-stat"><div class="gpa-stat-label">Highest</div><div class="gpa-stat-value">CHF ${stats.max.toFixed(2)}</div></div>
             </div>
-            <div class="gpa-section-title">Price History</div>
-            <div class="gpa-chart-container"><div id="gpa-chart-all"></div></div>
+            ${chartHtml}
             <div class="gpa-recommendation">
                 <div class="gpa-recommendation-title">${rec.type === 'good' ? '✓ Good Time to Buy' : rec.type === 'decent' ? '✓ Decent Price' : rec.type === 'wait' ? '⚠ Consider Waiting' : rec.type === 'caution' ? '⚠ Above Average' : '→ Average Price'}</div>
                 <div class="gpa-recommendation-text">${rec.text}</div>
             </div>
         `;
 
-        setTimeout(() => createChart(data, 'gpa-chart-all'), 50);
+        // Render charts after DOM is updated
+        setTimeout(() => {
+            if (threeMonthsData && threeMonthsData.length > 1) {
+                createChart(threeMonthsData, 'gpa-chart-3m');
+            }
+            if (allTimeData && allTimeData.length > 1) {
+                createChart(allTimeData, 'gpa-chart-all');
+            }
+        }, 50);
     }
 
     async function loadPriceData() {
@@ -470,10 +616,18 @@
 
         let data = await fetchPriceHistory();
         let simulated = false;
-        if (!data || data.length === 0) {
+
+        // Check if we have any data in the new format
+        const hasData = data && (
+            (data.allTime && data.allTime.length > 0) ||
+            (data.threeMonths && data.threeMonths.length > 0) ||
+            (Array.isArray(data) && data.length > 0)
+        );
+
+        if (!hasData) {
             const price = getCurrentPriceFromPage();
             if (price) {
-                data = generateSimulatedData(price);
+                data = { allTime: generateSimulatedData(price), threeMonths: null };
                 simulated = true;
             }
         }
