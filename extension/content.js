@@ -497,8 +497,8 @@
 
     function isProductPage() {
         const path = window.location.pathname;
-        // Match URLs ending with a number (product ID)
-        return /\/\d+$/.test(path) || /\/\d+\?/.test(path + '?');
+        // Match product URLs: /xx/s1/product/name-12345 (must have /product/ and end with number)
+        return /\/product\/.*-(\d+)$/.test(path) || /\/product\/.*\/(\d+)$/.test(path);
     }
 
     function init() {
