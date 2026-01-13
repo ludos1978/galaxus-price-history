@@ -307,57 +307,126 @@
     }
 
     function extractFromVisibleChart() {
-        const priceSection = document.querySelector('#priceHistoryBlock')?.closest('section') ||
+        // Find the Recharts SVG in the price history section
+        const priceSection = document.querySelector('.ypBxcVsA') ||
+                            document.querySelector('#priceHistoryBlock')?.closest('section') ||
                             document.querySelector('[data-test="priceHistoryBlock"]')?.closest('section');
 
-        const svgs = priceSection ? priceSection.querySelectorAll('svg') : document.querySelectorAll('svg');
+        const container = priceSection || document.body;
+        const svgs = container.querySelectorAll('svg.recharts-surface, svg[class*="recharts"]');
 
         for (const svg of svgs) {
-            const paths = svg.querySelectorAll('path');
-            for (const path of paths) {
-                const d = path.getAttribute('d');
-                if (!d) continue;
+            // Extract Y-axis labels to build price mapping
+            const yAxisLabels = [];
+            const yAxisTexts = svg.querySelectorAll('.recharts-yAxis-tick-labels text, .recharts-cartesian-axis-tick-value');
 
-                const lCount = (d.match(/L/g) || []).length;
-                if (lCount >= 5) {
-                    const points = [];
-                    const regex = /([ML])\s*([\d.]+)[,\s]+([\d.]+)/g;
-                    let match;
-                    while ((match = regex.exec(d)) !== null) {
-                        points.push({ x: parseFloat(match[2]), y: parseFloat(match[3]) });
-                    }
-
-                    if (points.length >= 5) {
-                        const texts = svg.querySelectorAll('text');
-                        const prices = [];
-                        for (const text of texts) {
-                            const priceMatch = (text.textContent || '').match(/([\d'.,]+)/);
-                            if (priceMatch) {
-                                const price = parseFloat(priceMatch[1].replace(/[',]/g, ''));
-                                if (price > 10 && price < 100000) prices.push(price);
-                            }
-                        }
-
-                        if (prices.length >= 2) {
-                            const minPrice = Math.min(...prices);
-                            const maxPrice = Math.max(...prices);
-                            const minY = Math.min(...points.map(p => p.y));
-                            const maxY = Math.max(...points.map(p => p.y));
-
-                            console.log('[GPA] Extracting from chart, price range:', minPrice, '-', maxPrice, 'points:', points.length);
-
-                            return points.map((p, i) => {
-                                const normalizedY = (maxY - p.y) / (maxY - minY);
-                                const price = minPrice + normalizedY * (maxPrice - minPrice);
-                                const date = new Date();
-                                date.setMonth(date.getMonth() - (points.length - 1 - i));
-                                return { date: date.toISOString().split('T')[0], price: Math.round(price * 100) / 100 };
-                            });
-                        }
+            for (const text of yAxisTexts) {
+                const textContent = text.textContent || '';
+                // Parse price like "100.–", "150.–", etc.
+                const priceMatch = textContent.match(/([\d'.,]+)/);
+                if (priceMatch) {
+                    const price = parseFloat(priceMatch[1].replace(/[',–.]/g, ''));
+                    const yAttr = text.getAttribute('y');
+                    if (yAttr && price > 0) {
+                        yAxisLabels.push({ y: parseFloat(yAttr), price: price });
                     }
                 }
             }
+
+            if (yAxisLabels.length < 2) continue;
+
+            // Sort by Y coordinate (top to bottom = high price to low price)
+            yAxisLabels.sort((a, b) => a.y - b.y);
+
+            const minY = yAxisLabels[0].y;
+            const maxY = yAxisLabels[yAxisLabels.length - 1].y;
+            const maxPrice = yAxisLabels[0].price; // Top = highest price
+            const minPrice = yAxisLabels[yAxisLabels.length - 1].price; // Bottom = lowest price
+
+            console.log('[GPA] Y-axis mapping:', { minY, maxY, minPrice, maxPrice, labels: yAxisLabels.length });
+
+            // Find the main chart line path (solid line, not dashed)
+            const paths = svg.querySelectorAll('path.recharts-line-curve');
+            let mainPath = null;
+
+            for (const path of paths) {
+                const d = path.getAttribute('d');
+                const strokeDash = path.getAttribute('stroke-dasharray');
+                // Use the solid line (no dash) with the most data
+                if (d && !strokeDash && (d.match(/L/g) || []).length > 10) {
+                    mainPath = path;
+                    break;
+                }
+            }
+
+            if (!mainPath) {
+                // Fallback: any path with enough L commands
+                for (const path of svg.querySelectorAll('path')) {
+                    const d = path.getAttribute('d');
+                    if (d && (d.match(/L/g) || []).length > 50) {
+                        mainPath = path;
+                        break;
+                    }
+                }
+            }
+
+            if (!mainPath) continue;
+
+            const d = mainPath.getAttribute('d');
+
+            // Parse path coordinates - extract unique X positions with their Y values
+            const allPoints = [];
+            const regex = /([ML])\s*([\d.]+)[,\s]+([\d.]+)/g;
+            let match;
+
+            while ((match = regex.exec(d)) !== null) {
+                allPoints.push({ x: parseFloat(match[2]), y: parseFloat(match[3]) });
+            }
+
+            // Remove duplicate points (Recharts draws stepped lines with duplicates)
+            const uniquePoints = [];
+            let lastX = -1;
+
+            for (const p of allPoints) {
+                if (Math.abs(p.x - lastX) > 1) { // New X position (more than 1px apart)
+                    uniquePoints.push(p);
+                    lastX = p.x;
+                } else {
+                    // Same X, update Y to latest value
+                    if (uniquePoints.length > 0) {
+                        uniquePoints[uniquePoints.length - 1].y = p.y;
+                    }
+                }
+            }
+
+            console.log('[GPA] Extracted', uniquePoints.length, 'unique points from chart');
+
+            if (uniquePoints.length < 5) continue;
+
+            // Map Y coordinates to prices using linear interpolation
+            const priceData = uniquePoints.map((p, i) => {
+                // Clamp Y to axis range
+                const clampedY = Math.max(minY, Math.min(maxY, p.y));
+                // Linear interpolation: higher Y = lower price
+                const price = maxPrice - ((clampedY - minY) / (maxY - minY)) * (maxPrice - minPrice);
+
+                // Calculate date - spread points over the time range
+                const date = new Date();
+                const daysBack = Math.round((uniquePoints.length - 1 - i) * (365 / uniquePoints.length));
+                date.setDate(date.getDate() - daysBack);
+
+                return {
+                    date: date.toISOString().split('T')[0],
+                    price: Math.round(price * 100) / 100
+                };
+            });
+
+            console.log('[GPA] Chart data extracted:', priceData.length, 'points, price range:',
+                Math.min(...priceData.map(p => p.price)), '-', Math.max(...priceData.map(p => p.price)));
+
+            return priceData;
         }
+
         return null;
     }
 
