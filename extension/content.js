@@ -6,62 +6,46 @@
     let panel = null;
     let capturedPriceData = null;
 
-    // Intercept fetch requests to capture price history data
-    const originalFetch = window.fetch;
-    window.fetch = async function(...args) {
-        const response = await originalFetch.apply(this, args);
+    // Inject script into page context to intercept network requests
+    function injectNetworkInterceptor() {
+        const script = document.createElement('script');
+        script.textContent = `
+            (function() {
+                const originalFetch = window.fetch;
+                window.fetch = async function(...args) {
+                    const response = await originalFetch.apply(this, args);
+                    try {
+                        const url = args[0]?.url || args[0];
+                        if (typeof url === 'string' && url.includes('graphql')) {
+                            const clonedResponse = response.clone();
+                            const data = await clonedResponse.json();
+                            window.postMessage({ type: 'GPA_NETWORK_DATA', data: data }, '*');
+                        }
+                    } catch (e) {}
+                    return response;
+                };
+            })();
+        `;
+        (document.head || document.documentElement).appendChild(script);
+        script.remove();
+    }
 
-        try {
-            const url = args[0]?.url || args[0];
-            if (typeof url === 'string' && url.includes('graphql')) {
-                const clonedResponse = response.clone();
-                const data = await clonedResponse.json();
-
-                // Look for price history data in the response
-                const priceData = findPriceHistoryInResponse(data);
-                if (priceData && priceData.length > 0) {
-                    console.log('[GPA] Captured price data from fetch:', priceData.length, 'points');
-                    capturedPriceData = priceData;
-                    // Trigger update if panel exists
-                    if (panel && panel.classList.contains('visible')) {
-                        setTimeout(() => renderWithCapturedData(), 100);
-                    }
+    // Listen for intercepted data from page context
+    window.addEventListener('message', function(event) {
+        if (event.data && event.data.type === 'GPA_NETWORK_DATA') {
+            const priceData = findPriceHistoryInResponse(event.data.data);
+            if (priceData && priceData.length > 0) {
+                console.log('[GPA] Captured price data from network:', priceData.length, 'points');
+                capturedPriceData = priceData;
+                if (panel && panel.classList.contains('visible')) {
+                    setTimeout(() => renderWithCapturedData(), 100);
                 }
             }
-        } catch (e) {
-            // Ignore parsing errors
         }
+    });
 
-        return response;
-    };
-
-    // Also intercept XHR for older API calls
-    const originalXHROpen = XMLHttpRequest.prototype.open;
-    const originalXHRSend = XMLHttpRequest.prototype.send;
-
-    XMLHttpRequest.prototype.open = function(method, url, ...rest) {
-        this._gpaUrl = url;
-        return originalXHROpen.apply(this, [method, url, ...rest]);
-    };
-
-    XMLHttpRequest.prototype.send = function(...args) {
-        this.addEventListener('load', function() {
-            try {
-                if (this._gpaUrl && this._gpaUrl.includes('graphql')) {
-                    const data = JSON.parse(this.responseText);
-                    const priceData = findPriceHistoryInResponse(data);
-                    if (priceData && priceData.length > 0) {
-                        console.log('[GPA] Captured price data from XHR:', priceData.length, 'points');
-                        capturedPriceData = priceData;
-                        if (panel && panel.classList.contains('visible')) {
-                            setTimeout(() => renderWithCapturedData(), 100);
-                        }
-                    }
-                }
-            } catch (e) {}
-        });
-        return originalXHRSend.apply(this, args);
-    };
+    // Inject the interceptor
+    injectNetworkInterceptor();
 
     function findPriceHistoryInResponse(obj, depth = 0) {
         if (depth > 20 || !obj || typeof obj !== 'object') return null;
