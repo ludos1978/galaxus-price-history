@@ -11,28 +11,12 @@
         return match ? match[1] : null;
     }
 
-    // Collapse description and specifications sections to bring price history into view
-    async function collapseOtherSections() {
-        console.log('[GPA] Collapsing other sections to trigger lazy load...');
-
-        const sectionsToCollapse = ['#description', '#specifications', '[data-test="descriptionBlock"]', '[data-test="specificationsBlock"]'];
-
-        for (const selector of sectionsToCollapse) {
-            const section = document.querySelector(selector);
-            if (section) {
-                const isExpanded = section.getAttribute('aria-expanded') === 'true';
-                if (isExpanded) {
-                    console.log('[GPA] Collapsing section:', selector);
-                    section.click();
-                    await sleep(100);
-                }
-            }
-        }
-    }
-
     // Click and expand the Preisentwicklung section
     async function expandPriceHistory() {
         console.log('[GPA] Looking for Preisentwicklung button...');
+
+        // Save current scroll position
+        const savedScrollY = window.scrollY;
 
         // Specific selector for the Preisentwicklung button
         const button = document.querySelector('#priceHistoryBlock') ||
@@ -40,10 +24,10 @@
                        document.querySelector('button[aria-controls*="priceHistory"]');
 
         if (button) {
-            // First, scroll the button into view to trigger lazy loading
+            // Scroll the button into view to trigger lazy loading
             console.log('[GPA] Scrolling Preisentwicklung into view...');
-            button.scrollIntoView({ behavior: 'instant', block: 'center' });
-            await sleep(500);
+            button.scrollIntoView({ behavior: 'auto', block: 'center' });
+            await sleep(300);
 
             const isExpanded = button.getAttribute('aria-expanded') === 'true';
             console.log('[GPA] Found priceHistoryBlock button, expanded:', isExpanded);
@@ -51,7 +35,7 @@
             if (!isExpanded) {
                 console.log('[GPA] Clicking to expand...');
                 button.click();
-                await sleep(2000); // Wait for data to load
+                await sleep(1500); // Wait for data to load
             } else {
                 console.log('[GPA] Already expanded');
             }
@@ -59,17 +43,13 @@
             // Now click time period tabs to load both datasets
             await clickTimePeriodTabs();
 
-            // Scroll back to top so user sees the page normally
-            window.scrollTo({ top: 0, behavior: 'smooth' });
+            // Restore scroll position
+            window.scrollTo({ top: savedScrollY, behavior: 'auto' });
 
             return true;
         }
 
         console.log('[GPA] priceHistoryBlock button not found, trying fallbacks...');
-
-        // Try collapsing other sections first
-        await collapseOtherSections();
-        await sleep(500);
 
         // Fallback: search for text
         const allElements = document.querySelectorAll('button, [role="button"]');
@@ -77,12 +57,13 @@
             const text = (el.textContent || '').trim();
             if (text === 'Preisentwicklung') {
                 console.log('[GPA] Found button by text, scrolling and clicking...');
-                el.scrollIntoView({ behavior: 'instant', block: 'center' });
-                await sleep(500);
+                el.scrollIntoView({ behavior: 'auto', block: 'center' });
+                await sleep(300);
                 el.click();
-                await sleep(2000);
+                await sleep(1500);
                 await clickTimePeriodTabs();
-                window.scrollTo({ top: 0, behavior: 'smooth' });
+                // Restore scroll position
+                window.scrollTo({ top: savedScrollY, behavior: 'auto' });
                 return true;
             }
         }
