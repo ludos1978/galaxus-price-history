@@ -131,7 +131,7 @@
         // Scroll button into view to trigger lazy loading
         console.log('[GPA] Scrolling to Preisentwicklung to trigger lazy load...');
         button.scrollIntoView({ behavior: 'auto', block: 'center' });
-        await sleep(300);
+        await sleep(500);
 
         const isExpanded = button.getAttribute('aria-expanded') === 'true';
         console.log('[GPA] Button expanded:', isExpanded);
@@ -139,11 +139,20 @@
         if (!isExpanded) {
             console.log('[GPA] Clicking to expand...');
             button.click();
-            await sleep(1500);
+            await sleep(2000); // Wait longer for content to load
         }
 
-        // Find time period tabs
-        await loadBothTimePeriods(button);
+        // Wait for the chart to potentially render
+        console.log('[GPA] Waiting for chart to render...');
+        await sleep(1500);
+
+        // Try loading both time periods - retry if tabs not found initially
+        for (let retry = 0; retry < 3; retry++) {
+            const success = await loadBothTimePeriods(button);
+            if (success) break;
+            console.log('[GPA] Tabs not found, retrying in 1 second... (attempt', retry + 2, ')');
+            await sleep(1000);
+        }
 
         // Restore scroll position
         window.scrollTo({ top: scrollY, behavior: 'auto' });
@@ -152,27 +161,52 @@
     }
 
     async function loadBothTimePeriods(button) {
-        // Find the expanded content area
-        const section = button.closest('section') || button.parentElement?.parentElement?.parentElement;
-        if (!section) {
-            console.log('[GPA] Could not find section for time tabs');
-            return;
+        // Find the expanded content area - try multiple methods
+        let section = button.closest('section') || button.parentElement?.parentElement?.parentElement;
+
+        // Also try to find by price history section helper
+        if (!section || !section.querySelector) {
+            section = findPriceHistorySection();
         }
 
-        // Look for time period buttons
-        const allButtons = section.querySelectorAll('button, [role="tab"], [role="button"]');
+        if (!section) {
+            console.log('[GPA] Could not find section for time tabs');
+            return false;
+        }
+
+        // Look for time period buttons in the section and in the whole document as fallback
+        let allButtons = section.querySelectorAll('button, [role="tab"], [role="button"]');
+
+        // If no buttons in section, search more broadly
+        if (allButtons.length < 2) {
+            // Try finding tabs near the chart
+            const priceSection = findPriceHistorySection();
+            if (priceSection) {
+                allButtons = priceSection.querySelectorAll('button, [role="tab"], [role="button"]');
+            }
+        }
+
         let threeMonthsBtn = null;
         let allTimeBtn = null;
+
+        console.log('[GPA] Searching', allButtons.length, 'buttons for time tabs...');
 
         for (const btn of allButtons) {
             if (btn === button) continue;
             const text = (btn.textContent || '').trim().toLowerCase();
-            console.log('[GPA] Found button:', text);
             if (text.includes('3 monate') || text.includes('3 month') || text === '3m' || text === '3') {
+                console.log('[GPA] Found 3-month button:', text);
                 threeMonthsBtn = btn;
             } else if (text.includes('alles') || text.includes('all') || text === 'max' || text.includes('alle')) {
+                console.log('[GPA] Found all-time button:', text);
                 allTimeBtn = btn;
             }
+        }
+
+        // Return false if we didn't find the tabs
+        if (!threeMonthsBtn && !allTimeBtn) {
+            console.log('[GPA] No time period tabs found');
+            return false;
         }
 
         // Load "Alles" (all time) first
@@ -180,13 +214,22 @@
             console.log('[GPA] Clicking "Alles" tab...');
             currentTimePeriod = 'alltime';
             allTimeBtn.click();
-            await sleep(1500);
 
-            // Also try to extract from DOM in case network capture failed
-            if (!capturedPriceData.allTime) {
-                const extracted = extractFromVisibleChart() || extractFromPriceText();
-                if (extracted) {
-                    capturedPriceData.allTime = normalizeData(extracted);
+            // Wait longer and retry extraction multiple times
+            // The chart takes time to render after clicking
+            for (let attempt = 0; attempt < 5; attempt++) {
+                await sleep(1500); // Wait 1.5 seconds between attempts
+                console.log('[GPA] All-time extraction attempt', attempt + 1);
+                if (!capturedPriceData.allTime) {
+                    const extracted = extractFromVisibleChart() || extractFromPriceText();
+                    if (extracted) {
+                        capturedPriceData.allTime = normalizeData(extracted);
+                        console.log('[GPA] All-time data extracted on attempt', attempt + 1);
+                        break;
+                    }
+                } else {
+                    console.log('[GPA] All-time data already captured from network');
+                    break;
                 }
             }
         }
@@ -196,18 +239,27 @@
             console.log('[GPA] Clicking "3 Monate" tab...');
             currentTimePeriod = '3months';
             threeMonthsBtn.click();
-            await sleep(1500);
 
-            if (!capturedPriceData.threeMonths) {
-                const extracted = extractFromVisibleChart() || extractFromPriceText();
-                if (extracted) {
-                    capturedPriceData.threeMonths = normalizeData(extracted);
+            for (let attempt = 0; attempt < 5; attempt++) {
+                await sleep(1500);
+                console.log('[GPA] 3-month extraction attempt', attempt + 1);
+                if (!capturedPriceData.threeMonths) {
+                    const extracted = extractFromVisibleChart() || extractFromPriceText();
+                    if (extracted) {
+                        capturedPriceData.threeMonths = normalizeData(extracted);
+                        console.log('[GPA] 3-month data extracted on attempt', attempt + 1);
+                        break;
+                    }
+                } else {
+                    console.log('[GPA] 3-month data already captured from network');
+                    break;
                 }
             }
         }
 
         // Reset time period tracker
         currentTimePeriod = null;
+        return true;
     }
 
     function extractFromPageData() {
@@ -253,12 +305,80 @@
         return null;
     }
 
-    function extractFromPriceText() {
-        const textEl = document.querySelector('.yAa8UXh') ||
-                       document.querySelector('[class*="priceDescription"]') ||
-                       document.querySelector('#priceHistoryBlock + div p');
+    // Helper to find the price history section container
+    function findPriceHistorySection() {
+        // Try various selectors to find the price history section
 
-        if (!textEl) return null;
+        // Method 1: Find by known class
+        let section = document.querySelector('.ypBxcVsA');
+        if (section) {
+            console.log('[GPA] Found section by .ypBxcVsA');
+            return section;
+        }
+
+        // Method 2: Find the expanded priceHistoryBlock content
+        const priceBlock = document.querySelector('#priceHistoryBlock[aria-expanded="true"]') ||
+                          document.querySelector('[data-test="priceHistoryBlock"][aria-expanded="true"]');
+        if (priceBlock) {
+            // Look for sibling or child content area
+            const parent = priceBlock.closest('section') || priceBlock.parentElement;
+            if (parent) {
+                // Find the content area that contains the chart
+                const content = parent.querySelector('.recharts-wrapper')?.closest('div') ||
+                               parent.querySelector('[class*="content"]') ||
+                               parent.querySelector('svg')?.parentElement;
+                if (content) {
+                    console.log('[GPA] Found section via priceHistoryBlock parent');
+                    return content.closest('div[class]') || parent;
+                }
+            }
+        }
+
+        // Method 3: Find by text content "Preisentwicklung" and get expanded content
+        const allButtons = document.querySelectorAll('button, [role="button"]');
+        for (const btn of allButtons) {
+            if ((btn.textContent || '').trim() === 'Preisentwicklung' &&
+                btn.getAttribute('aria-expanded') === 'true') {
+                const parent = btn.closest('section') || btn.parentElement?.parentElement;
+                if (parent) {
+                    console.log('[GPA] Found section via Preisentwicklung button');
+                    return parent;
+                }
+            }
+        }
+
+        // Method 4: Find any section containing recharts
+        const rechartsWrapper = document.querySelector('.recharts-wrapper');
+        if (rechartsWrapper) {
+            const section = rechartsWrapper.closest('section') ||
+                           rechartsWrapper.closest('[class*="price"]') ||
+                           rechartsWrapper.parentElement?.parentElement;
+            if (section) {
+                console.log('[GPA] Found section via recharts-wrapper');
+                return section;
+            }
+        }
+
+        console.log('[GPA] Could not find price history section');
+        return null;
+    }
+
+    function extractFromPriceText() {
+        // First find the price history section
+        const priceSection = findPriceHistorySection();
+        console.log('[GPA] extractFromPriceText - priceSection found:', !!priceSection);
+
+        if (!priceSection) return null;
+
+        // Look for price text paragraph WITHIN the price section
+        const textEl = priceSection.querySelector('p') ||
+                       priceSection.querySelector('[class*="description"]') ||
+                       priceSection.querySelector('[class*="text"]');
+
+        if (!textEl) {
+            console.log('[GPA] No text element found in price section');
+            return null;
+        }
 
         const text = textEl.textContent || '';
         console.log('[GPA] Found price text:', text.substring(0, 100));
@@ -307,31 +427,71 @@
     }
 
     function extractFromVisibleChart() {
-        // Find the Recharts SVG in the price history section
-        const priceSection = document.querySelector('.ypBxcVsA') ||
-                            document.querySelector('#priceHistoryBlock')?.closest('section') ||
-                            document.querySelector('[data-test="priceHistoryBlock"]')?.closest('section');
+        console.log('[GPA] extractFromVisibleChart called');
+
+        // Use the helper to find the price section
+        const priceSection = findPriceHistorySection();
+        console.log('[GPA] extractFromVisibleChart - priceSection:', !!priceSection);
+
+        // Log what's on the page for debugging
+        const allSvgs = document.querySelectorAll('svg');
+        const rechartsSvgs = document.querySelectorAll('.recharts-surface');
+        console.log('[GPA] Total SVGs on page:', allSvgs.length, 'Recharts SVGs:', rechartsSvgs.length);
 
         const container = priceSection || document.body;
-        const svgs = container.querySelectorAll('svg.recharts-surface, svg[class*="recharts"]');
+
+        // Find all SVGs - try multiple selectors
+        let svgs = container.querySelectorAll('svg.recharts-surface');
+        if (svgs.length === 0) {
+            svgs = container.querySelectorAll('.recharts-wrapper svg');
+        }
+        if (svgs.length === 0) {
+            svgs = container.querySelectorAll('svg');
+        }
+
+        console.log('[GPA] Found', svgs.length, 'SVGs in container');
 
         for (const svg of svgs) {
-            // Extract Y-axis labels to build price mapping
+            console.log('[GPA] Checking SVG with class:', svg.className);
+
+            // Extract Y-axis labels - try multiple selectors
             const yAxisLabels = [];
-            const yAxisTexts = svg.querySelectorAll('.recharts-yAxis-tick-labels text, .recharts-cartesian-axis-tick-value');
+            let yAxisTexts = svg.querySelectorAll('.recharts-yAxis-tick-labels text');
+
+            if (yAxisTexts.length === 0) {
+                yAxisTexts = svg.querySelectorAll('text.recharts-cartesian-axis-tick-value');
+            }
+            if (yAxisTexts.length === 0) {
+                // Find all text elements and filter for Y-axis (those with numeric content like "100.–")
+                const allTexts = svg.querySelectorAll('text');
+                const filtered = [];
+                for (const t of allTexts) {
+                    const content = t.textContent || '';
+                    if (/^\d+\.–$/.test(content.trim()) || /^\d+$/.test(content.trim())) {
+                        filtered.push(t);
+                    }
+                }
+                yAxisTexts = filtered;
+            }
+
+            console.log('[GPA] Found', yAxisTexts.length, 'Y-axis text elements');
 
             for (const text of yAxisTexts) {
                 const textContent = text.textContent || '';
                 // Parse price like "100.–", "150.–", etc.
                 const priceMatch = textContent.match(/([\d'.,]+)/);
                 if (priceMatch) {
-                    const price = parseFloat(priceMatch[1].replace(/[',–.]/g, ''));
+                    // Remove everything except digits
+                    const price = parseFloat(priceMatch[1].replace(/[^0-9]/g, ''));
                     const yAttr = text.getAttribute('y');
                     if (yAttr && price > 0) {
                         yAxisLabels.push({ y: parseFloat(yAttr), price: price });
+                        console.log('[GPA] Y-axis label:', textContent, '-> y:', yAttr, 'price:', price);
                     }
                 }
             }
+
+            console.log('[GPA] Parsed', yAxisLabels.length, 'Y-axis labels');
 
             if (yAxisLabels.length < 2) continue;
 
@@ -343,38 +503,53 @@
             const maxPrice = yAxisLabels[0].price; // Top = highest price
             const minPrice = yAxisLabels[yAxisLabels.length - 1].price; // Bottom = lowest price
 
-            console.log('[GPA] Y-axis mapping:', { minY, maxY, minPrice, maxPrice, labels: yAxisLabels.length });
+            console.log('[GPA] Y-axis mapping:', { minY, maxY, minPrice, maxPrice });
 
-            // Find the main chart line path (solid line, not dashed)
-            const paths = svg.querySelectorAll('path.recharts-line-curve');
+            // Find the main chart line path
             let mainPath = null;
+            const allPaths = svg.querySelectorAll('path');
 
-            for (const path of paths) {
+            console.log('[GPA] Found', allPaths.length, 'paths in SVG');
+
+            // First try to find recharts-line-curve without dashes
+            for (const path of allPaths) {
                 const d = path.getAttribute('d');
                 const strokeDash = path.getAttribute('stroke-dasharray');
-                // Use the solid line (no dash) with the most data
-                if (d && !strokeDash && (d.match(/L/g) || []).length > 10) {
-                    mainPath = path;
-                    break;
-                }
-            }
+                const className = path.getAttribute('class') || '';
 
-            if (!mainPath) {
-                // Fallback: any path with enough L commands
-                for (const path of svg.querySelectorAll('path')) {
-                    const d = path.getAttribute('d');
-                    if (d && (d.match(/L/g) || []).length > 50) {
+                if (d && className.includes('recharts-line-curve') && !strokeDash) {
+                    const lCount = (d.match(/L/g) || []).length;
+                    if (lCount > 10) {
+                        console.log('[GPA] Found line-curve path with', lCount, 'L commands');
                         mainPath = path;
                         break;
                     }
                 }
             }
 
-            if (!mainPath) continue;
+            // Fallback: any path with many L commands
+            if (!mainPath) {
+                for (const path of allPaths) {
+                    const d = path.getAttribute('d');
+                    if (d) {
+                        const lCount = (d.match(/L/g) || []).length;
+                        if (lCount > 100) {
+                            console.log('[GPA] Found fallback path with', lCount, 'L commands');
+                            mainPath = path;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (!mainPath) {
+                console.log('[GPA] No suitable path found');
+                continue;
+            }
 
             const d = mainPath.getAttribute('d');
 
-            // Parse path coordinates - extract unique X positions with their Y values
+            // Parse path coordinates
             const allPoints = [];
             const regex = /([ML])\s*([\d.]+)[,\s]+([\d.]+)/g;
             let match;
@@ -383,34 +558,30 @@
                 allPoints.push({ x: parseFloat(match[2]), y: parseFloat(match[3]) });
             }
 
-            // Remove duplicate points (Recharts draws stepped lines with duplicates)
+            console.log('[GPA] Parsed', allPoints.length, 'raw points from path');
+
+            // Remove duplicate points (Recharts draws stepped lines)
             const uniquePoints = [];
             let lastX = -1;
 
             for (const p of allPoints) {
-                if (Math.abs(p.x - lastX) > 1) { // New X position (more than 1px apart)
+                if (Math.abs(p.x - lastX) > 1) {
                     uniquePoints.push(p);
                     lastX = p.x;
-                } else {
-                    // Same X, update Y to latest value
-                    if (uniquePoints.length > 0) {
-                        uniquePoints[uniquePoints.length - 1].y = p.y;
-                    }
+                } else if (uniquePoints.length > 0) {
+                    uniquePoints[uniquePoints.length - 1].y = p.y;
                 }
             }
 
-            console.log('[GPA] Extracted', uniquePoints.length, 'unique points from chart');
+            console.log('[GPA] Reduced to', uniquePoints.length, 'unique points');
 
             if (uniquePoints.length < 5) continue;
 
-            // Map Y coordinates to prices using linear interpolation
+            // Map Y coordinates to prices
             const priceData = uniquePoints.map((p, i) => {
-                // Clamp Y to axis range
                 const clampedY = Math.max(minY, Math.min(maxY, p.y));
-                // Linear interpolation: higher Y = lower price
                 const price = maxPrice - ((clampedY - minY) / (maxY - minY)) * (maxPrice - minPrice);
 
-                // Calculate date - spread points over the time range
                 const date = new Date();
                 const daysBack = Math.round((uniquePoints.length - 1 - i) * (365 / uniquePoints.length));
                 date.setDate(date.getDate() - daysBack);
@@ -421,12 +592,13 @@
                 };
             });
 
-            console.log('[GPA] Chart data extracted:', priceData.length, 'points, price range:',
+            console.log('[GPA] Final data:', priceData.length, 'points, range:',
                 Math.min(...priceData.map(p => p.price)), '-', Math.max(...priceData.map(p => p.price)));
 
             return priceData;
         }
 
+        console.log('[GPA] extractFromVisibleChart returning null');
         return null;
     }
 
