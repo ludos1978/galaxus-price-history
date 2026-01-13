@@ -13,46 +13,43 @@
 
     // Click and expand the Preisentwicklung section
     async function expandPriceHistory() {
-        console.log('[GPA] Looking for Preisentwicklung tab...');
+        console.log('[GPA] Looking for Preisentwicklung button...');
 
-        // Try multiple times as the page might still be loading
-        for (let attempt = 0; attempt < 3; attempt++) {
-            // Find all elements and look for price-related text
-            const allElements = document.querySelectorAll('button, a, [role="tab"], [role="button"], div, span, li');
+        // Specific selector for the Preisentwicklung button
+        const button = document.querySelector('#priceHistoryBlock') ||
+                       document.querySelector('[data-test="priceHistoryBlock"]') ||
+                       document.querySelector('button[aria-controls*="priceHistory"]');
 
-            for (const el of allElements) {
-                const text = (el.textContent || '').trim().toLowerCase();
-                // Must be a relatively short text to avoid matching containers
-                if (text.length < 50 && (text === 'preisentwicklung' || text === 'price development')) {
-                    console.log('[GPA] Found Preisentwicklung element, clicking:', el);
-                    el.click();
-                    await sleep(1500);
-                    return true;
-                }
+        if (button) {
+            const isExpanded = button.getAttribute('aria-expanded') === 'true';
+            console.log('[GPA] Found priceHistoryBlock button, expanded:', isExpanded);
+
+            if (!isExpanded) {
+                console.log('[GPA] Clicking to expand...');
+                button.click();
+                await sleep(2000); // Wait for data to load
+                return true;
+            } else {
+                console.log('[GPA] Already expanded');
+                return true;
             }
-
-            // Try clicking on elements with specific attributes
-            const tabSelectors = [
-                '[data-test*="price"]',
-                '[data-testid*="price"]',
-                '[class*="Tab"][class*="price" i]',
-                '[class*="tab"][class*="price" i]'
-            ];
-
-            for (const selector of tabSelectors) {
-                const el = document.querySelector(selector);
-                if (el) {
-                    console.log('[GPA] Found price tab via selector:', selector);
-                    el.click();
-                    await sleep(1500);
-                    return true;
-                }
-            }
-
-            await sleep(500);
         }
 
-        console.log('[GPA] Could not find Preisentwicklung tab');
+        console.log('[GPA] priceHistoryBlock button not found, trying fallbacks...');
+
+        // Fallback: search for text
+        const allElements = document.querySelectorAll('button, [role="button"]');
+        for (const el of allElements) {
+            const text = (el.textContent || '').trim();
+            if (text === 'Preisentwicklung') {
+                console.log('[GPA] Found button by text, clicking...');
+                el.click();
+                await sleep(2000);
+                return true;
+            }
+        }
+
+        console.log('[GPA] Could not find Preisentwicklung button');
         return false;
     }
 
