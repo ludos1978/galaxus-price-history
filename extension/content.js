@@ -4,6 +4,7 @@
 
     let currentProductId = null;
     let panel = null;
+    let isLoading = false; // Prevent double loading
 
     // Extract product ID from URL
     function getProductId() {
@@ -106,18 +107,28 @@
         if (allTimeBtn) {
             console.log('[GPA] Clicking "Alles" tab...');
             allTimeBtn.click();
-            await sleep(1500);
+            await sleep(2000); // Wait longer for chart to fully render
             // Extract and store "all time" data
             window._gpaTimeData.allTime = extractFromVisibleChart() || extractFromPriceText();
+            if (!window._gpaTimeData.allTime) {
+                // Retry once more if failed
+                await sleep(1000);
+                window._gpaTimeData.allTime = extractFromVisibleChart() || extractFromPriceText();
+            }
         }
 
         // Click "3 Monate" to get recent data
         if (threeMonthsBtn) {
             console.log('[GPA] Clicking "3 Monate" tab...');
             threeMonthsBtn.click();
-            await sleep(1500);
+            await sleep(2000); // Wait longer for chart to fully render
             // Extract and store "3 months" data
             window._gpaTimeData.threeMonths = extractFromVisibleChart() || extractFromPriceText();
+            if (!window._gpaTimeData.threeMonths) {
+                // Retry once more if failed
+                await sleep(1000);
+                window._gpaTimeData.threeMonths = extractFromVisibleChart() || extractFromPriceText();
+            }
         }
 
         // If no tabs found, try looking for segmented control or similar
@@ -592,6 +603,11 @@
 
     async function loadPriceData() {
         if (!panel) return;
+        if (isLoading) {
+            console.log('[GPA] Already loading, skipping...');
+            return;
+        }
+        isLoading = true;
 
         panel.querySelector('.gpa-content').innerHTML = `<div class="gpa-loading"><div class="spinner"></div>Analyzing price history...</div>`;
 
@@ -613,6 +629,7 @@
             }
         }
         renderContent(data, simulated);
+        isLoading = false;
     }
 
     function createPanel() {
@@ -670,29 +687,6 @@
         }
     }
 
-    // Watch for DOM changes that might indicate price data loaded
-    function watchForPriceData() {
-        const observer = new MutationObserver((mutations) => {
-            for (const mutation of mutations) {
-                if (mutation.type === 'childList') {
-                    const addedNodes = Array.from(mutation.addedNodes);
-                    for (const node of addedNodes) {
-                        if (node.nodeType === 1) {
-                            const text = node.textContent || '';
-                            if (text.includes('Preisentwicklung') || text.includes('priceHistory')) {
-                                console.log('[GPA] Price data might be available, reloading...');
-                                setTimeout(loadPriceData, 500);
-                                return;
-                            }
-                        }
-                    }
-                }
-            }
-        });
-
-        observer.observe(document.body, { childList: true, subtree: true });
-    }
-
     // Initialize
     console.log('[GPA] Galaxus Price Analyzer starting...');
 
@@ -701,7 +695,4 @@
 
     // Watch for URL changes every 500ms (for SPA navigation)
     setInterval(watchUrlChanges, 500);
-
-    // Watch for price data appearing in DOM
-    watchForPriceData();
 })();
