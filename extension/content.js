@@ -107,28 +107,52 @@
         if (allTimeBtn) {
             console.log('[GPA] Clicking "Alles" tab...');
             allTimeBtn.click();
-            await sleep(2000); // Wait longer for chart to fully render
-            // Extract and store "all time" data
-            window._gpaTimeData.allTime = extractFromVisibleChart() || extractFromPriceText();
-            if (!window._gpaTimeData.allTime) {
-                // Retry once more if failed
-                await sleep(1000);
-                window._gpaTimeData.allTime = extractFromVisibleChart() || extractFromPriceText();
+
+            // Wait for tab to become active and chart to update
+            await sleep(500);
+
+            // Wait until the tab shows as selected/active
+            for (let i = 0; i < 5; i++) {
+                const isActive = allTimeBtn.classList.contains('active') ||
+                                allTimeBtn.getAttribute('aria-selected') === 'true' ||
+                                allTimeBtn.getAttribute('data-state') === 'active';
+                if (isActive) break;
+                await sleep(300);
             }
+
+            // Wait for chart to fully render with new data
+            await sleep(1500);
+
+            // Extract and store "all time" data
+            console.log('[GPA] Extracting all-time data...');
+            window._gpaTimeData.allTime = extractFromVisibleChart() || extractFromPriceText();
+            console.log('[GPA] All-time data points:', window._gpaTimeData.allTime?.length || 0);
         }
 
         // Click "3 Monate" to get recent data
         if (threeMonthsBtn) {
             console.log('[GPA] Clicking "3 Monate" tab...');
             threeMonthsBtn.click();
-            await sleep(2000); // Wait longer for chart to fully render
-            // Extract and store "3 months" data
-            window._gpaTimeData.threeMonths = extractFromVisibleChart() || extractFromPriceText();
-            if (!window._gpaTimeData.threeMonths) {
-                // Retry once more if failed
-                await sleep(1000);
-                window._gpaTimeData.threeMonths = extractFromVisibleChart() || extractFromPriceText();
+
+            // Wait for tab to become active and chart to update
+            await sleep(500);
+
+            // Wait until the tab shows as selected/active
+            for (let i = 0; i < 5; i++) {
+                const isActive = threeMonthsBtn.classList.contains('active') ||
+                                threeMonthsBtn.getAttribute('aria-selected') === 'true' ||
+                                threeMonthsBtn.getAttribute('data-state') === 'active';
+                if (isActive) break;
+                await sleep(300);
             }
+
+            // Wait for chart to fully render with new data
+            await sleep(1500);
+
+            // Extract and store "3 months" data
+            console.log('[GPA] Extracting 3-month data...');
+            window._gpaTimeData.threeMonths = extractFromVisibleChart() || extractFromPriceText();
+            console.log('[GPA] 3-month data points:', window._gpaTimeData.threeMonths?.length || 0);
         }
 
         // If no tabs found, try looking for segmented control or similar
@@ -307,7 +331,22 @@
 
     // Extract from visible SVG chart
     function extractFromVisibleChart() {
-        const svgs = document.querySelectorAll('svg');
+        // First try to find SVG specifically in the price history section
+        const priceSection = document.querySelector('#priceHistoryBlock')?.closest('section') ||
+                            document.querySelector('[data-test="priceHistoryBlock"]')?.closest('section') ||
+                            document.querySelector('.recharts-wrapper')?.closest('div');
+
+        let svgs;
+        if (priceSection) {
+            svgs = priceSection.querySelectorAll('svg');
+            console.log('[GPA] Found', svgs.length, 'SVGs in price section');
+        }
+
+        // Fallback to all SVGs if none found in section
+        if (!svgs || svgs.length === 0) {
+            svgs = document.querySelectorAll('svg');
+            console.log('[GPA] Searching all', svgs.length, 'SVGs on page');
+        }
 
         for (const svg of svgs) {
             const paths = svg.querySelectorAll('path');
