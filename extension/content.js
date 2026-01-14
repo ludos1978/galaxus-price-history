@@ -611,6 +611,8 @@
             return;
         }
         console.log('[GPA] Creating whisker chart with', data.length, 'data points, currentPrice:', currentPrice);
+        console.log('[GPA] First 3 data points:', JSON.stringify(data.slice(0, 3)));
+        console.log('[GPA] Last 3 data points:', JSON.stringify(data.slice(-3)));
 
         const now = new Date();
         const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -681,11 +683,13 @@
 
         const boxes = [];
         for (let i = 0; i < buckets.length; i++) {
+          try {
             const bucket = buckets[i];
-            console.log('[GPA] Processing bucket', i, 'of', buckets.length);
+            console.log('[GPA] Processing bucket', i, 'of', buckets.length, 'bucket:', JSON.stringify(bucket));
 
             // "NOW" bucket - just shows current price, no box plot
             if (bucket.isNow) {
+                console.log('[GPA] Bucket', i, 'is NOW bucket');
                 boxes.push({
                     label: 'NOW',
                     isNow: true,
@@ -695,11 +699,14 @@
                 continue;
             }
 
+            console.log('[GPA] Bucket', i, 'startDays:', bucket.startDays, 'endDays:', bucket.endDays);
+
             // Calculate period boundaries
             const periodStart = new Date(today);
             periodStart.setDate(periodStart.getDate() - bucket.startDays);
             const periodEnd = new Date(today);
             periodEnd.setDate(periodEnd.getDate() - bucket.endDays);
+            console.log('[GPA] Bucket', i, 'period:', periodStart.toISOString().split('T')[0], 'to', periodEnd.toISOString().split('T')[0]);
 
             // Find starting price and points in period
             let startingPrice = null;
@@ -713,12 +720,14 @@
                     pointsInPeriod.push({ date: pointDate, price: point.price });
                 }
             }
+            console.log('[GPA] Bucket', i, 'startingPrice:', startingPrice, 'pointsInPeriod:', pointsInPeriod.length);
 
             if (startingPrice === null && pointsInPeriod.length > 0) {
                 startingPrice = pointsInPeriod[0].price;
             }
 
             if (startingPrice === null) {
+                console.log('[GPA] Bucket', i, 'no data, skipping');
                 boxes.push({ label: bucket.label, isMajor: bucket.isMajor, min: null });
                 continue;
             }
@@ -748,13 +757,13 @@
             }
 
             const totalDays = (periodEnd - periodStart) / (1000 * 60 * 60 * 24);
+            console.log('[GPA] Bucket', i, 'totalDays:', totalDays, 'segments:', priceSegments.length);
 
             if (totalDays <= 0) {
+                console.log('[GPA] Bucket', i, 'totalDays <= 0, skipping');
                 boxes.push({ label: bucket.label, isMajor: bucket.isMajor, min: null });
                 continue;
             }
-
-            console.log('[GPA] Bucket', i, bucket.label, 'segments:', priceSegments.length);
             const box = {
                 label: bucket.label,
                 isMajor: bucket.isMajor,
@@ -767,6 +776,11 @@
                 days: Math.round(totalDays)
             };
             boxes.push(box);
+            console.log('[GPA] Box', i, 'created successfully');
+          } catch (bucketError) {
+            console.error('[GPA] Error processing bucket', i, ':', bucketError);
+            boxes.push({ label: buckets[i]?.label || '', isMajor: buckets[i]?.isMajor, min: null });
+          }
         }
 
         console.log('[GPA] Created', boxes.length, 'boxes, boxes with data:', boxes.filter(b => b.min != null).length);
