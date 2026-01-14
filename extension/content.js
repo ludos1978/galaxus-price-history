@@ -753,9 +753,12 @@
         }
 
         // Get global min/max for scaling
-        const allPrices = boxes.filter(b => b.min != null).flatMap(b => [b.min, b.max]);
+        const allPrices = boxes.filter(b => b.min != null && !b.isNow).flatMap(b => [b.min, b.max]);
         if (currentPrice) allPrices.push(currentPrice);
-        if (allPrices.length === 0) return;
+        if (allPrices.length === 0) {
+            console.log('[GPA] No price data for chart');
+            return;
+        }
 
         const minPrice = Math.min(...allPrices) * 0.95;
         const maxPrice = Math.max(...allPrices) * 1.05;
