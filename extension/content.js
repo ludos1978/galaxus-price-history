@@ -828,8 +828,8 @@
                     const cy = yScale(currentPrice);
                     // Dot at current price
                     svg += `<circle cx="${x}" cy="${cy}" r="6" fill="#e53935"/>`;
-                    // Price value above
-                    svg += `<text x="${x}" y="${cy - 12}" text-anchor="middle" font-size="14" fill="#e53935" font-weight="600">${currentPrice.toFixed(0)}</text>`;
+                    // Price value above with white outline
+                    svg += `<text x="${x}" y="${cy - 12}" text-anchor="middle" font-size="14" fill="#e53935" font-weight="600" stroke="#fff" stroke-width="3" paint-order="stroke">${currentPrice.toFixed(0)}</text>`;
                 }
                 return;
             }
@@ -868,28 +868,30 @@
             svg += `<line x1="${x - boxWidth/2}" y1="${yMedian}" x2="${x + boxWidth/2}" y2="${yMedian}" stroke="${boxColor}" stroke-width="3"/>`;
 
             // Value labels only for major buckets, skip if same as current price
+            // Using stroke with paint-order for white outline behind text
+            const outline = 'stroke="#fff" stroke-width="3" paint-order="stroke"';
             if (box.isMajor) {
                 const curr = currentPrice ? currentPrice.toFixed(0) : null;
                 const med = box.median.toFixed(0);
                 // Max label - skip if same as current or median
                 if (box.max.toFixed(0) !== curr && box.max.toFixed(0) !== med) {
-                    svg += `<text x="${x}" y="${yMax - 8}" text-anchor="middle" font-size="12" fill="#333">${box.max.toFixed(0)}</text>`;
+                    svg += `<text x="${x}" y="${yMax - 8}" text-anchor="middle" font-size="12" fill="#333" ${outline}>${box.max.toFixed(0)}</text>`;
                 }
                 // Q3 label - skip if same as current or median
                 if (box.q3.toFixed(0) !== curr && box.q3.toFixed(0) !== med) {
-                    svg += `<text x="${x + boxWidth/2 + 3}" y="${yQ3}" text-anchor="start" font-size="12" fill="#333" dy="0.35em">${box.q3.toFixed(0)}</text>`;
+                    svg += `<text x="${x + boxWidth/2 + 3}" y="${yQ3}" text-anchor="start" font-size="12" fill="#333" ${outline} dy="0.35em">${box.q3.toFixed(0)}</text>`;
                 }
                 // Median label - skip if same as current
                 if (med !== curr) {
-                    svg += `<text x="${x}" y="${yMedian}" text-anchor="middle" font-size="14" fill="${boxColor}" font-weight="600" dy="0.35em">${med}</text>`;
+                    svg += `<text x="${x}" y="${yMedian}" text-anchor="middle" font-size="14" fill="${boxColor}" font-weight="600" ${outline} dy="0.35em">${med}</text>`;
                 }
                 // Q1 label - skip if same as current or median
                 if (box.q1.toFixed(0) !== curr && box.q1.toFixed(0) !== med) {
-                    svg += `<text x="${x + boxWidth/2 + 3}" y="${yQ1}" text-anchor="start" font-size="12" fill="#333" dy="0.35em">${box.q1.toFixed(0)}</text>`;
+                    svg += `<text x="${x + boxWidth/2 + 3}" y="${yQ1}" text-anchor="start" font-size="12" fill="#333" ${outline} dy="0.35em">${box.q1.toFixed(0)}</text>`;
                 }
                 // Min label - skip if same as current or median
                 if (box.min.toFixed(0) !== curr && box.min.toFixed(0) !== med) {
-                    svg += `<text x="${x}" y="${yMin + 18}" text-anchor="middle" font-size="12" fill="#333">${box.min.toFixed(0)}</text>`;
+                    svg += `<text x="${x}" y="${yMin + 18}" text-anchor="middle" font-size="12" fill="#333" ${outline}>${box.min.toFixed(0)}</text>`;
                 }
             }
         });
