@@ -11,8 +11,10 @@
     let currentProductId = null;
     let panel = null;
     let isLoading = false; // Prevent double loading
-    let autoLoad = true; // Auto-load on page visit
-    let detailLevel = 7; // Number of time buckets (7, 21, or 63)
+
+    // Load settings from localStorage (with defaults)
+    let autoLoad = localStorage.getItem('gpa-autoLoad') !== 'false'; // Default true
+    let detailLevel = parseInt(localStorage.getItem('gpa-detailLevel'), 10) || 7;
 
     // Extract product ID from URL
     function getProductId() {
@@ -1020,9 +1022,11 @@
         panel.querySelector('.gpa-read').addEventListener('click', () => loadPriceData());
         panel.querySelector('.gpa-auto').addEventListener('change', (e) => {
             autoLoad = e.target.checked;
+            localStorage.setItem('gpa-autoLoad', autoLoad);
         });
         panel.querySelector('.gpa-detail').addEventListener('change', (e) => {
             detailLevel = parseInt(e.target.value, 10);
+            localStorage.setItem('gpa-detailLevel', detailLevel);
             loadPriceData(); // Reload with new detail level
         });
 
