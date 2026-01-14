@@ -2,9 +2,16 @@
 (function() {
     'use strict';
 
+    // Configurable wait times (in ms)
+    const WAIT_3_MONTHS = 300;      // Wait after clicking 3 Monate tab
+    const WAIT_ALLES = 2000;        // Wait after clicking Alles tab for data to load
+    const WAIT_SCROLL_RESTORE = 200; // Wait before restoring scroll after clicking Alles
+    const POLL_INTERVAL = 100;       // How often to check for tabs appearing
+
     let currentProductId = null;
     let panel = null;
     let isLoading = false; // Prevent double loading
+    let autoLoad = true; // Auto-load on page visit
 
     // Extract product ID from URL
     function getProductId() {
@@ -16,7 +23,7 @@
     async function expandPriceHistory() {
         console.log('[GPA] Looking for Preisentwicklung button...');
 
-        // Save current scroll position
+        // Save current scroll position to restore later
         const savedScrollY = window.scrollY;
 
         // Specific selector for the Preisentwicklung button
@@ -25,10 +32,9 @@
                        document.querySelector('button[aria-controls*="priceHistory"]');
 
         if (button) {
-            // Scroll the button into view to trigger lazy loading
-            console.log('[GPA] Scrolling Preisentwicklung into view...');
+            // Scroll ONCE to trigger lazy loading
+            console.log('[GPA] Scrolling Preisentwicklung into view to trigger loading...');
             button.scrollIntoView({ behavior: 'auto', block: 'center' });
-            await sleep(300);
 
             const isExpanded = button.getAttribute('aria-expanded') === 'true';
             console.log('[GPA] Found priceHistoryBlock button, expanded:', isExpanded);
@@ -36,16 +42,10 @@
             if (!isExpanded) {
                 console.log('[GPA] Clicking to expand...');
                 button.click();
-                await sleep(1500); // Wait for data to load
-            } else {
-                console.log('[GPA] Already expanded');
             }
 
-            // Now click time period tabs to load both datasets
-            await clickTimePeriodTabs();
-
-            // Restore scroll position
-            window.scrollTo({ top: savedScrollY, behavior: 'auto' });
+            // Click time period tabs (will wait for buttons to appear)
+            await clickTimePeriodTabs(savedScrollY);
 
             return true;
         }
@@ -59,12 +59,8 @@
             if (text === 'Preisentwicklung') {
                 console.log('[GPA] Found button by text, scrolling and clicking...');
                 el.scrollIntoView({ behavior: 'auto', block: 'center' });
-                await sleep(300);
                 el.click();
-                await sleep(1500);
-                await clickTimePeriodTabs();
-                // Restore scroll position
-                window.scrollTo({ top: savedScrollY, behavior: 'auto' });
+                await clickTimePeriodTabs(savedScrollY);
                 return true;
             }
         }
@@ -74,88 +70,74 @@
     }
 
     // Click both "3 Monate" and "Alles" tabs to load both time periods
-    async function clickTimePeriodTabs() {
-        console.log('[GPA] Looking for time period tabs...');
+    async function clickTimePeriodTabs(savedScrollY) {
+        console.log('[GPA] Waiting for time period tabs...');
 
         // Store data from each period
         window._gpaTimeData = { threeMonths: null, allTime: null };
 
-        // Try multiple ways to find the price history section
-        let priceHistorySection = document.querySelector('#priceHistoryBlock')?.closest('section') ||
-                                  document.querySelector('[data-test="priceHistoryBlock"]')?.closest('section') ||
-                                  document.querySelector('#priceHistoryBlock')?.parentElement?.parentElement?.parentElement ||
-                                  document.querySelector('.recharts-wrapper')?.closest('section');
-
-        // Log what we found
-        console.log('[GPA] Price history section found:', !!priceHistorySection);
-
-        // Search for tabs - first in section, then globally
-        let buttons = [];
-        if (priceHistorySection) {
-            buttons = Array.from(priceHistorySection.querySelectorAll('button, [role="tab"], [role="button"]'));
-            console.log('[GPA] Found', buttons.length, 'buttons in price section');
-        }
-
-        // If no buttons in section or section not found, search globally near the price chart
-        if (buttons.length < 2) {
-            // Find all buttons on page that might be time tabs
-            const allButtons = document.querySelectorAll('button, [role="tab"], [role="button"]');
-            console.log('[GPA] Searching all', allButtons.length, 'buttons on page');
-            buttons = Array.from(allButtons);
-        }
-
-        let threeMonthsBtn = null;
+        // Wait for Alles button to appear (check frequently)
         let allTimeBtn = null;
+        let threeMonthsBtn = null;
 
-        for (const btn of buttons) {
-            const text = (btn.textContent || '').trim().toLowerCase();
-            // Skip the main Preisentwicklung button
-            if (text === 'preisentwicklung') continue;
-
-            if (text.includes('3 monate') || text.includes('3 month') || text === '3m' || text === '3') {
-                console.log('[GPA] Found 3-month button:', text);
-                threeMonthsBtn = btn;
-            } else if (text.includes('alles') || text.includes('all') || text === 'max' || text === 'alle') {
-                console.log('[GPA] Found all-time button:', text);
-                allTimeBtn = btn;
+        for (let attempt = 0; attempt < 20; attempt++) {
+            const tablist = document.querySelector('ul[role="tablist"]');
+            if (tablist) {
+                const tabButtons = tablist.querySelectorAll('button[role="tab"], [role="tab"]');
+                for (const btn of tabButtons) {
+                    const text = (btn.textContent || '').trim().toLowerCase();
+                    if (text.includes('3 monate')) {
+                        threeMonthsBtn = btn;
+                    } else if (text.includes('alles')) {
+                        allTimeBtn = btn;
+                    }
+                }
             }
+
+            if (allTimeBtn) {
+                console.log('[GPA] Tabs found after', (attempt + 1) * 100, 'ms');
+                break;
+            }
+
+            await sleep(POLL_INTERVAL);
         }
 
-        // Log if buttons not found
         if (!allTimeBtn) {
-            console.log('[GPA] WARNING: "Alles" button NOT found!');
-        }
-        if (!threeMonthsBtn) {
-            console.log('[GPA] WARNING: "3 Monate" button NOT found!');
-        }
-
-        // Click "Alles" first to get full history
-        if (allTimeBtn) {
-            console.log('[GPA] Clicking "Alles" tab...');
-            allTimeBtn.click();
-
-            // Wait for chart to update
-            await sleep(2500);
-
-            // Extract and store "all time" data
-            console.log('[GPA] Extracting all-time data...');
-            window._gpaTimeData.allTime = extractFromVisibleChart() || extractFromPriceText();
-            console.log('[GPA] All-time data points:', window._gpaTimeData.allTime?.length || 0);
+            console.log('[GPA] WARNING: "Alles" button NOT found after waiting!');
+            if (savedScrollY !== undefined) {
+                window.scrollTo({ top: savedScrollY, behavior: 'auto' });
+            }
+            return;
         }
 
-        // Click "3 Monate" to get recent data
+        // Click "3 Monate" first to load that data
         if (threeMonthsBtn) {
             console.log('[GPA] Clicking "3 Monate" tab...');
             threeMonthsBtn.click();
+            await sleep(WAIT_3_MONTHS);
 
-            // Wait for chart to update
-            await sleep(2500);
-
-            // Extract and store "3 months" data
             console.log('[GPA] Extracting 3-month data...');
             window._gpaTimeData.threeMonths = extractFromVisibleChart() || extractFromPriceText();
             console.log('[GPA] 3-month data points:', window._gpaTimeData.threeMonths?.length || 0);
         }
+
+        // Click "Alles" to initiate loading full history
+        console.log('[GPA] Clicking "Alles" tab...');
+        allTimeBtn.click();
+
+        // Restore scroll immediately after clicking - data will load in background
+        if (savedScrollY !== undefined) {
+            await sleep(WAIT_SCROLL_RESTORE);
+            console.log('[GPA] Restoring scroll position...');
+            window.scrollTo({ top: savedScrollY, behavior: 'auto' });
+        }
+
+        // Wait for all-time data to load
+        await sleep(WAIT_ALLES);
+
+        console.log('[GPA] Extracting all-time data...');
+        window._gpaTimeData.allTime = extractFromVisibleChart() || extractFromPriceText();
+        console.log('[GPA] All-time data points:', window._gpaTimeData.allTime?.length || 0);
     }
 
     function sleep(ms) {
@@ -273,143 +255,177 @@
         return null;
     }
 
-    // Extract price info from the visible text description
+    // Extract price info from the visible text description (fallback)
     function extractFromPriceText() {
-        // Look for the price description paragraph
-        const textEl = document.querySelector('.yAa8UXh') ||
-                       document.querySelector('[class*="priceDescription"]') ||
-                       document.querySelector('#priceHistoryBlock + div p');
-
-        if (!textEl) return null;
-
-        const text = textEl.textContent || '';
-        console.log('[GPA] Found price text:', text);
-
-        // Parse: "Der Preis sank am 5.9.2025 auf 398.– und erreichte am 29.1.2025 seinen Höchststand mit 738.36. Der aktuelle Preis liegt bei 449.–"
-        const currentMatch = text.match(/aktuelle[rn]?\s+Preis\s+(?:liegt\s+)?bei\s+([\d'.,]+)/i);
-        const lowestMatch = text.match(/(?:sank|fiel).*?auf\s+([\d'.,]+)/i);
-        const highestMatch = text.match(/Höchststand.*?([\d'.,]+)/i);
-
-        const current = currentMatch ? parseFloat(currentMatch[1].replace(/[',–]/g, '')) : null;
-        const lowest = lowestMatch ? parseFloat(lowestMatch[1].replace(/[',–]/g, '')) : null;
-        const highest = highestMatch ? parseFloat(highestMatch[1].replace(/[',–]/g, '')) : null;
-
-        if (current && lowest && highest) {
-            console.log('[GPA] Extracted from text - Current:', current, 'Low:', lowest, 'High:', highest);
-            // Generate approximate data based on these values
-            const data = [];
-            const now = new Date();
-            for (let i = 12; i >= 0; i--) {
-                const date = new Date(now);
-                date.setMonth(date.getMonth() - i);
-                // Simulate price between low and high
-                const range = highest - lowest;
-                const randomFactor = Math.random();
-                const price = lowest + (range * randomFactor);
-                data.push({
-                    date: date.toISOString().split('T')[0],
-                    price: Math.round(price * 100) / 100
-                });
-            }
-            // Set current price as last value
-            data[data.length - 1].price = current;
-            return data;
+        const priceRange = extractPriceRangeFromText();
+        if (!priceRange || !priceRange.min || !priceRange.max) {
+            return null;
         }
 
+        const { min: lowest, max: highest, current } = priceRange;
+
+        // Generate approximate data based on min/max/current
+        console.log('[GPA] Generating data from text - Current:', current, 'Low:', lowest, 'High:', highest);
+        const data = [];
+        const now = new Date();
+        for (let i = 12; i >= 0; i--) {
+            const date = new Date(now);
+            date.setMonth(date.getMonth() - i);
+            const range = highest - lowest;
+            const randomFactor = Math.random();
+            const price = lowest + (range * randomFactor);
+            data.push({
+                date: date.toISOString().split('T')[0],
+                price: Math.round(price * 100) / 100
+            });
+        }
+        // Set current price as last value
+        if (current) {
+            data[data.length - 1].price = current;
+        }
+        return data;
+    }
+
+    // Extract min/max/current from price description paragraph
+    function extractPriceRangeFromText() {
+        const textEl = document.querySelector('.yAa8UXh');
+        if (!textEl) {
+            console.log('[GPA] Price description paragraph not found');
+            return null;
+        }
+
+        const text = textEl.textContent || '';
+        console.log('[GPA] Price description:', text.substring(0, 100) + '...');
+
+        // Parse: "Der Preis sank am 7.6.2025 auf 151.– und erreichte am 10.11.2024 seinen Höchststand mit 339.–. Der aktuelle Preis liegt bei 189.–"
+        const lowestMatch = text.match(/(?:sank|fiel).*?auf\s+([\d'.,]+)/i);
+        const highestMatch = text.match(/Höchststand.*?([\d'.,]+)/i);
+        const currentMatch = text.match(/aktuelle[rn]?\s+Preis\s+(?:liegt\s+)?bei\s+([\d'.,]+)/i);
+
+        const lowest = lowestMatch ? parseFloat(lowestMatch[1].replace(/[',–]/g, '')) : null;
+        const highest = highestMatch ? parseFloat(highestMatch[1].replace(/[',–]/g, '')) : null;
+        const current = currentMatch ? parseFloat(currentMatch[1].replace(/[',–]/g, '')) : null;
+
+        console.log('[GPA] Extracted prices - Low:', lowest, 'High:', highest, 'Current:', current);
+
+        if (lowest && highest) {
+            return { min: lowest, max: highest, current: current };
+        }
         return null;
     }
 
     // Extract from visible SVG chart
     function extractFromVisibleChart() {
-        // First try to find SVG specifically in the price history section
-        const priceSection = document.querySelector('#priceHistoryBlock')?.closest('section') ||
-                            document.querySelector('[data-test="priceHistoryBlock"]')?.closest('section') ||
-                            document.querySelector('.recharts-wrapper')?.closest('div');
+        const svg = document.querySelector('.recharts-wrapper svg.recharts-surface');
+        if (!svg) return null;
 
-        let svgs;
-        if (priceSection) {
-            svgs = priceSection.querySelectorAll('svg');
-            console.log('[GPA] Found', svgs.length, 'SVGs in price section');
+        // Get Y-axis prices from SVG labels
+        const yPrices = [];
+        svg.querySelectorAll('text').forEach(t => {
+            const m = (t.textContent || '').match(/^([\d',.]+)\.?–?$/);
+            if (m) {
+                const p = parseFloat(m[1].replace(/[',]/g, ''));
+                if (p > 0) yPrices.push(p);
+            }
+        });
+
+        if (yPrices.length < 2) {
+            console.log('[GPA] No Y-axis prices found');
+            return null;
         }
 
-        // Fallback to all SVGs if none found in section
-        if (!svgs || svgs.length === 0) {
-            svgs = document.querySelectorAll('svg');
-            console.log('[GPA] Searching all', svgs.length, 'SVGs on page');
+        const minPrice = Math.min(...yPrices);
+        const maxPrice = Math.max(...yPrices);
+        console.log('[GPA] Y-axis range:', minPrice, '-', maxPrice);
+
+        // Get path points
+        const path = svg.querySelector('path.recharts-line-curve');
+        if (!path) return null;
+
+        const d = path.getAttribute('d') || '';
+        const points = [];
+        const regex = /([ML])([\d.]+),([\d.]+)/g;
+        let m;
+        while ((m = regex.exec(d)) !== null) {
+            points.push({ x: parseFloat(m[2]), y: parseFloat(m[3]) });
         }
 
-        for (const svg of svgs) {
-            const paths = svg.querySelectorAll('path');
-            for (const path of paths) {
-                const d = path.getAttribute('d');
-                if (!d) continue;
+        if (points.length < 3) return null;
 
-                const lCount = (d.match(/L/g) || []).length;
-                if (lCount >= 5) {
-                    const points = [];
-                    const regex = /([ML])\s*([\d.]+)[,\s]+([\d.]+)/g;
-                    let match;
-                    while ((match = regex.exec(d)) !== null) {
-                        points.push({ x: parseFloat(match[2]), y: parseFloat(match[3]) });
-                    }
+        // Get unique X points
+        const unique = [];
+        let lastX = -1;
+        for (const p of points) {
+            if (Math.abs(p.x - lastX) > 0.5) {
+                unique.push(p);
+                lastX = p.x;
+            }
+        }
 
-                    if (points.length >= 5) {
-                        const texts = svg.querySelectorAll('text');
-                        const prices = [];
-                        for (const text of texts) {
-                            const priceMatch = (text.textContent || '').match(/([\d'.,]+)/);
-                            if (priceMatch) {
-                                const price = parseFloat(priceMatch[1].replace(/[',]/g, ''));
-                                if (price > 10 && price < 100000) prices.push(price);
+        // SVG coordinate system: need to find the actual Y range used
+        const svgHeight = parseFloat(svg.getAttribute('height')) || 250;
+        const plotTop = 5;  // approximate padding
+        const plotBottom = svgHeight - 35; // approximate padding for x-axis
+        const plotHeight = plotBottom - plotTop;
+
+        console.log('[GPA] Points:', unique.length, 'SVG height:', svgHeight);
+
+        return unique.map((p, i) => {
+            // Map Y coordinate to price (Y increases downward in SVG)
+            const yRatio = (plotBottom - p.y) / plotHeight;
+            const price = minPrice + yRatio * (maxPrice - minPrice);
+            const date = new Date();
+            date.setDate(date.getDate() - (unique.length - 1 - i));
+            return { date: date.toISOString().split('T')[0], price: Math.round(price * 100) / 100 };
+        });
+    }
+
+    // Get current price from page
+    function getCurrentPriceFromPage() {
+        // Find price by structure: look for h1 (product title), then find CHF price nearby
+        const h1 = document.querySelector('h1');
+        if (h1) {
+            // Go up to find container, then look for strong with CHF
+            let container = h1.parentElement;
+            for (let i = 0; i < 3 && container; i++) {
+                container = container.parentElement;
+                if (!container) break;
+
+                // Look for strong elements containing CHF
+                const strongElements = container.querySelectorAll('strong');
+                for (const strong of strongElements) {
+                    const text = strong.textContent || '';
+                    if (text.includes('CHF')) {
+                        // Match "CHF753.–" or "CHF 1'234.56"
+                        const match = text.match(/CHF\s*([\d',.]+)/);
+                        if (match) {
+                            const price = parseFloat(match[1].replace(/[',]/g, ''));
+                            if (price > 0) {
+                                console.log('[GPA] Found current price:', price);
+                                return price;
                             }
-                        }
-
-                        if (prices.length >= 2) {
-                            const minPrice = Math.min(...prices);
-                            const maxPrice = Math.max(...prices);
-                            const minY = Math.min(...points.map(p => p.y));
-                            const maxY = Math.max(...points.map(p => p.y));
-
-                            console.log('[GPA] Extracting from chart, price range:', minPrice, '-', maxPrice);
-
-                            return points.map((p, i) => {
-                                const normalizedY = (maxY - p.y) / (maxY - minY);
-                                const price = minPrice + normalizedY * (maxPrice - minPrice);
-                                const date = new Date();
-                                date.setMonth(date.getMonth() - (points.length - 1 - i));
-                                return { date: date.toISOString().split('T')[0], price: Math.round(price * 100) / 100 };
-                            });
                         }
                     }
                 }
             }
         }
-        return null;
-    }
 
-    // Get current price from page
-    function getCurrentPriceFromPage() {
-        const selectors = [
-            '[data-test="product-price"]',
-            '[class*="productPrice" i]',
-            '[class*="currentPrice" i]',
-            '[itemprop="price"]',
-            'strong[class*="price" i]'
-        ];
-
-        for (const selector of selectors) {
-            const el = document.querySelector(selector);
-            if (el) {
-                const match = (el.textContent || '').match(/([\d',.]+)/);
+        // Fallback: first strong with CHF on the page
+        const allStrong = document.querySelectorAll('strong');
+        for (const strong of allStrong) {
+            const text = strong.textContent || '';
+            if (text.includes('CHF') && !text.includes('sparen')) {
+                const match = text.match(/CHF\s*([\d',.]+)/);
                 if (match) {
-                    const price = parseFloat(match[1].replace(/[',]/g, '').replace(/\.–$/, ''));
+                    const price = parseFloat(match[1].replace(/[',]/g, ''));
                     if (price > 0) {
-                        console.log('[GPA] Found current price:', price);
+                        console.log('[GPA] Found current price (fallback):', price);
                         return price;
                     }
                 }
             }
         }
+
         return null;
     }
 
@@ -475,46 +491,80 @@
         })).filter(item => item.price > 0);
     }
 
-    function generateSimulatedData(currentPrice, months = 12) {
-        const data = [];
+    // Filter data for exclusive time range (from startDays ago to endDays ago)
+    function filterByDaysExclusive(data, startDays, endDays) {
         const now = new Date();
-        for (let i = months; i >= 0; i--) {
-            const date = new Date(now);
-            date.setMonth(date.getMonth() - i);
-            const variation = (Math.random() - 0.5) * 0.3;
-            data.push({
-                date: date.toISOString().split('T')[0],
-                price: Math.round(currentPrice * (1 + variation) * 100) / 100,
-                simulated: true
-            });
+        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+        if (startDays === Infinity) {
+            // "All" = older than endDays
+            const endCutoff = new Date(today);
+            endCutoff.setDate(endCutoff.getDate() - endDays);
+            return data.filter(item => new Date(item.date) < endCutoff);
         }
-        data[data.length - 1].price = currentPrice;
-        data[data.length - 1].simulated = false;
-        return data;
+
+        const startCutoff = new Date(today);
+        startCutoff.setDate(startCutoff.getDate() - startDays);
+
+        if (endDays === 0) {
+            // Most recent period (to now)
+            return data.filter(item => new Date(item.date) >= startCutoff);
+        }
+
+        const endCutoff = new Date(today);
+        endCutoff.setDate(endCutoff.getDate() - endDays);
+
+        return data.filter(item => {
+            const date = new Date(item.date);
+            return date >= startCutoff && date < endCutoff;
+        });
     }
 
-    function calculateStats(prices) {
-        if (!prices || prices.length === 0) return null;
+    function calcStats(prices) {
+        if (!prices || prices.length === 0) return { avg: null, min: null, max: null, count: 0 };
         const values = prices.map(p => p.price);
-        const n = values.length;
-        const mean = values.reduce((a, b) => a + b, 0) / n;
-        const sorted = [...values].sort((a, b) => a - b);
-        const median = n % 2 === 0 ? (sorted[n/2 - 1] + sorted[n/2]) / 2 : sorted[Math.floor(n/2)];
-        const stdDev = Math.sqrt(values.map(v => Math.pow(v - mean, 2)).reduce((a, b) => a + b, 0) / n);
+        const avg = values.reduce((a, b) => a + b, 0) / values.length;
         const min = Math.min(...values);
         const max = Math.max(...values);
-        const current = values[values.length - 1];
-        const pricePosition = max !== min ? ((current - min) / (max - min)) * 100 : 50;
-        const recentValues = values.slice(-3);
-        const trend = recentValues.length >= 2 ? recentValues[recentValues.length - 1] - recentValues[0] : 0;
-
-        return { mean: Math.round(mean * 100) / 100, median: Math.round(median * 100) / 100, stdDev: Math.round(stdDev * 100) / 100, min: Math.round(min * 100) / 100, max: Math.round(max * 100) / 100, current, pricePosition: Math.round(pricePosition), trend: Math.round(trend * 100) / 100, count: n };
+        return {
+            avg: Math.round(avg * 100) / 100,
+            min: Math.round(min * 100) / 100,
+            max: Math.round(max * 100) / 100,
+            count: values.length
+        };
     }
 
-    function filterLast3Months(data) {
-        const threeMonthsAgo = new Date();
-        threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
-        return data.filter(item => new Date(item.date) >= threeMonthsAgo);
+    function calculateStats(allData, currentPriceOverride) {
+        if (!allData || allData.length === 0) return null;
+
+        // Exclusive time ranges (matching whisker chart)
+        // All = older than 3Y, 3Y = 3Y-1Y, 1Y = 1Y-3M, 3M = 3M-1M, 1M = 1M-1W, 1W = last week
+        const dataAll = filterByDaysExclusive(allData, Infinity, 1095);
+        const data3y = filterByDaysExclusive(allData, 1095, 365);
+        const data1y = filterByDaysExclusive(allData, 365, 90);
+        const data3m = filterByDaysExclusive(allData, 90, 30);
+        const data1m = filterByDaysExclusive(allData, 30, 7);
+        const data1w = filterByDaysExclusive(allData, 7, 0);
+
+        const all = calcStats(dataAll);
+        const y3 = calcStats(data3y);
+        const y1 = calcStats(data1y);
+        const m3 = calcStats(data3m);
+        const m1 = calcStats(data1m);
+        const w1 = calcStats(data1w);
+
+        // For overall stats, use all data
+        const totalStats = calcStats(allData);
+        const current = currentPriceOverride || allData[allData.length - 1]?.price || 0;
+        const pricePosition = totalStats.max !== totalStats.min ? ((current - totalStats.min) / (totalStats.max - totalStats.min)) * 100 : 50;
+
+        return {
+            current: Math.round(current * 100) / 100,
+            // Stats for each exclusive period
+            w1, m1, m3, y1, y3, all,
+            pricePosition: Math.round(pricePosition),
+            count: allData.length
+        };
     }
 
     function createChart(data, containerId) {
@@ -531,8 +581,12 @@
         const xScale = (i) => padding.left + (i / (data.length - 1)) * (width - padding.left - padding.right);
         const yScale = (p) => height - padding.bottom - ((p - minPrice) / (maxPrice - minPrice)) * (height - padding.top - padding.bottom);
 
+        // Step/staircase pattern - price stays flat until it changes
         let pathD = `M ${xScale(0)} ${yScale(data[0].price)}`;
-        for (let i = 1; i < data.length; i++) pathD += ` L ${xScale(i)} ${yScale(data[i].price)}`;
+        for (let i = 1; i < data.length; i++) {
+            pathD += ` L ${xScale(i)} ${yScale(data[i-1].price)}`; // horizontal to next x
+            pathD += ` L ${xScale(i)} ${yScale(data[i].price)}`;   // vertical to new price
+        }
         let areaD = pathD + ` L ${xScale(data.length - 1)} ${height - padding.bottom} L ${xScale(0)} ${height - padding.bottom} Z`;
 
         container.innerHTML = `
@@ -547,87 +601,205 @@
         `;
     }
 
-    function getRecommendation(stats) {
-        const diff = ((stats.current - stats.mean) / stats.mean) * 100;
-        if (diff <= -10) return { type: 'good', text: `Great price! ${Math.abs(diff).toFixed(1)}% below average.` };
-        if (diff <= -5) return { type: 'decent', text: `Good price - ${Math.abs(diff).toFixed(1)}% below average.` };
-        if (diff >= 10) return { type: 'wait', text: `${diff.toFixed(1)}% above average. Consider waiting.` };
-        if (diff >= 5) return { type: 'caution', text: `Slightly above average (+${diff.toFixed(1)}%).` };
-        return { type: 'neutral', text: `Near average price (${diff >= 0 ? '+' : ''}${diff.toFixed(1)}%).` };
-    }
+    // Create box plot / whisker chart for price distribution
+    function createWhiskerChart(data, containerId, currentPrice) {
+        const container = document.getElementById(containerId);
+        if (!container || !data || data.length === 0) return;
 
-    function renderContent(dataObj, isSimulated) {
-        const content = panel.querySelector('.gpa-content');
+        const now = new Date();
+        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
-        // Handle both old format (array) and new format (object with allTime/threeMonths)
-        let allTimeData = null;
-        let threeMonthsData = null;
+        // Define time buckets (All on left, recent on right)
+        const buckets = [
+            { label: 'All', days: Infinity },
+            { label: '3Y', days: 1095 },
+            { label: '1Y', days: 365 },
+            { label: '3M', days: 90 },
+            { label: '1M', days: 30 },
+            { label: '1W', days: 7 }
+        ];
 
-        if (Array.isArray(dataObj)) {
-            // Old format: single array
-            allTimeData = dataObj;
-            threeMonthsData = filterLast3Months(dataObj);
-        } else if (dataObj && typeof dataObj === 'object') {
-            // New format: object with allTime and threeMonths
-            allTimeData = dataObj.allTime;
-            threeMonthsData = dataObj.threeMonths || (allTimeData ? filterLast3Months(allTimeData) : null);
+        // Calculate statistics for each bucket
+        const calcPercentile = (arr, p) => {
+            const sorted = [...arr].sort((a, b) => a - b);
+            const idx = (p / 100) * (sorted.length - 1);
+            const lower = Math.floor(idx);
+            const upper = Math.ceil(idx);
+            if (lower === upper) return sorted[lower];
+            return sorted[lower] + (idx - lower) * (sorted[upper] - sorted[lower]);
+        };
+
+        const boxes = [];
+        for (let i = 0; i < buckets.length; i++) {
+            const bucket = buckets[i];
+            const nextBucket = buckets[i + 1]; // smaller time period
+
+            // Filter data for ONLY this period (exclusive of smaller periods)
+            let bucketData;
+            if (bucket.days === Infinity) {
+                // "All" = older than 3Y
+                const endCutoff = new Date(today);
+                endCutoff.setDate(endCutoff.getDate() - (nextBucket ? nextBucket.days : 0));
+                bucketData = data.filter(d => new Date(d.date) < endCutoff);
+            } else if (!nextBucket) {
+                // Last bucket (1W) = from 1W ago to now
+                const startCutoff = new Date(today);
+                startCutoff.setDate(startCutoff.getDate() - bucket.days);
+                bucketData = data.filter(d => new Date(d.date) >= startCutoff);
+            } else {
+                // Middle buckets = from bucket.days ago to nextBucket.days ago
+                const startCutoff = new Date(today);
+                startCutoff.setDate(startCutoff.getDate() - bucket.days);
+                const endCutoff = new Date(today);
+                endCutoff.setDate(endCutoff.getDate() - nextBucket.days);
+                bucketData = data.filter(d => {
+                    const date = new Date(d.date);
+                    return date >= startCutoff && date < endCutoff;
+                });
+            }
+
+            if (bucketData.length < 2) {
+                boxes.push({ label: bucket.label, min: null });
+                console.log(`[GPA] ${bucket.label}: no data (${bucketData.length} points)`);
+                continue;
+            }
+
+            const prices = bucketData.map(d => d.price);
+            const box = {
+                label: bucket.label,
+                min: Math.min(...prices),
+                q1: calcPercentile(prices, 25),
+                median: calcPercentile(prices, 50),
+                q3: calcPercentile(prices, 75),
+                max: Math.max(...prices),
+                count: prices.length
+            };
+            boxes.push(box);
+            console.log(`[GPA] ${bucket.label}: ${box.count} points, min=${box.min}, q1=${box.q1}, median=${box.median}, q3=${box.q3}, max=${box.max}`);
         }
 
-        if ((!allTimeData || allTimeData.length === 0) && (!threeMonthsData || threeMonthsData.length === 0)) {
-            content.innerHTML = `<div class="gpa-no-data">No price history data found. Try clicking "Preisentwicklung" tab on the page.</div>`;
+        // Get global min/max for scaling
+        const allPrices = boxes.filter(b => b.min != null).flatMap(b => [b.min, b.max]);
+        if (currentPrice) allPrices.push(currentPrice);
+        if (allPrices.length === 0) return;
+
+        const minPrice = Math.min(...allPrices) * 0.95;
+        const maxPrice = Math.max(...allPrices) * 1.05;
+
+        const width = container.clientWidth || 400;
+        const height = 360;
+        const padding = { top: 30, right: 15, bottom: 35, left: 15 };
+        const chartWidth = width - padding.left - padding.right;
+        const chartHeight = height - padding.top - padding.bottom;
+
+        const boxSpacing = chartWidth / boxes.length;
+        const boxWidth = Math.min(45, boxSpacing * 0.6);
+
+        const yScale = (p) => padding.top + chartHeight - ((p - minPrice) / (maxPrice - minPrice)) * chartHeight;
+
+        let svg = `<svg width="${width}" height="${height}">`;
+
+        // Current price line (dashed red, spanning full width)
+        if (currentPrice && currentPrice >= minPrice && currentPrice <= maxPrice) {
+            const cy = yScale(currentPrice);
+            svg += `<line x1="0" y1="${cy}" x2="${width}" y2="${cy}" stroke="#e53935" stroke-width="2" stroke-dasharray="6,3"/>`;
+            svg += `<text x="5" y="${cy - 6}" font-size="13" fill="#e53935" font-weight="bold">${currentPrice.toFixed(0)}</text>`;
+            svg += `<text x="${width - 5}" y="${cy - 6}" text-anchor="end" font-size="13" fill="#e53935" font-weight="bold">${currentPrice.toFixed(0)}</text>`;
+        }
+
+        // Draw box plots
+        boxes.forEach((box, i) => {
+            const x = padding.left + i * boxSpacing + boxSpacing / 2;
+
+            // Label
+            svg += `<text x="${x}" y="${height - 8}" text-anchor="middle" font-size="14" fill="#666" font-weight="600">${box.label}</text>`;
+
+            if (box.min == null) return;
+
+            const yMin = yScale(box.min);
+            const yQ1 = yScale(box.q1);
+            const yMedian = yScale(box.median);
+            const yQ3 = yScale(box.q3);
+            const yMax = yScale(box.max);
+
+            // Determine if current price is good in this period
+            const isGood = currentPrice && currentPrice <= box.q1;
+            const isBad = currentPrice && currentPrice >= box.q3;
+            const boxColor = isGood ? '#4caf50' : (isBad ? '#ff9800' : '#1a1a2e');
+
+            // Whisker (min to max line)
+            svg += `<line x1="${x}" y1="${yMin}" x2="${x}" y2="${yMax}" stroke="${boxColor}" stroke-width="2"/>`;
+
+            // Min/Max caps
+            svg += `<line x1="${x - boxWidth/3}" y1="${yMin}" x2="${x + boxWidth/3}" y2="${yMin}" stroke="${boxColor}" stroke-width="2"/>`;
+            svg += `<line x1="${x - boxWidth/3}" y1="${yMax}" x2="${x + boxWidth/3}" y2="${yMax}" stroke="${boxColor}" stroke-width="2"/>`;
+
+            // Box (Q1 to Q3)
+            const boxTop = Math.min(yQ1, yQ3);
+            const boxHeight = Math.abs(yQ3 - yQ1);
+            svg += `<rect x="${x - boxWidth/2}" y="${boxTop}" width="${boxWidth}" height="${boxHeight}" fill="${boxColor}" fill-opacity="0.2" stroke="${boxColor}" stroke-width="2" rx="3"/>`;
+
+            // Median line
+            svg += `<line x1="${x - boxWidth/2}" y1="${yMedian}" x2="${x + boxWidth/2}" y2="${yMedian}" stroke="${boxColor}" stroke-width="3"/>`;
+
+            // Value labels (max, median, min)
+            svg += `<text x="${x}" y="${yMax - 6}" text-anchor="middle" font-size="12" fill="#666">${box.max.toFixed(0)}</text>`;
+            svg += `<text x="${x}" y="${yMedian}" text-anchor="middle" font-size="14" fill="${boxColor}" font-weight="bold" dy="0.35em">${box.median.toFixed(0)}</text>`;
+            svg += `<text x="${x}" y="${yMin + 16}" text-anchor="middle" font-size="12" fill="#666">${box.min.toFixed(0)}</text>`;
+        });
+
+        svg += '</svg>';
+        container.innerHTML = svg;
+    }
+
+    function getRecommendation(stats) {
+        const avg = (stats.m3 && stats.m3.avg) || (stats.all && stats.all.avg);
+        if (!avg) return { type: 'neutral', text: 'Not enough data.' };
+        const diff = ((stats.current - avg) / avg) * 100;
+        if (diff <= -10) return { type: 'good', text: `${Math.abs(diff).toFixed(0)}% below avg` };
+        if (diff <= -5) return { type: 'decent', text: `${Math.abs(diff).toFixed(0)}% below avg` };
+        if (diff >= 10) return { type: 'wait', text: `${diff.toFixed(0)}% above avg` };
+        if (diff >= 5) return { type: 'caution', text: `${diff.toFixed(0)}% above avg` };
+        return { type: 'neutral', text: `${diff >= 0 ? '+' : ''}${diff.toFixed(0)}% vs avg` };
+    }
+
+    function renderContent(dataObj) {
+        const content = panel.querySelector('.gpa-content');
+
+        let allTimeData = null;
+        if (Array.isArray(dataObj)) {
+            allTimeData = dataObj;
+        } else if (dataObj && typeof dataObj === 'object') {
+            allTimeData = dataObj.allTime || dataObj.threeMonths;
+        }
+
+        if (!allTimeData || allTimeData.length === 0) {
+            content.innerHTML = `<div class="gpa-no-data">No price history found.</div>`;
             return;
         }
 
-        // Use allTime for statistics, fall back to threeMonths if not available
-        const primaryData = allTimeData && allTimeData.length > 0 ? allTimeData : threeMonthsData;
-        const stats = calculateStats(primaryData);
-        const stats3m = threeMonthsData && threeMonthsData.length > 1 ? calculateStats(threeMonthsData) : stats;
-        const rec = getRecommendation(stats3m);
-        const trendIcon = stats.trend > 0 ? '↑' : stats.trend < 0 ? '↓' : '→';
-        const trendClass = stats.trend > 0 ? 'warning' : stats.trend < 0 ? 'highlight' : '';
-        const statClass = stats.pricePosition < 30 ? 'highlight' : stats.pricePosition > 70 ? 'warning' : '';
-
-        // Build chart sections
-        let chartHtml = '';
-        if (threeMonthsData && threeMonthsData.length > 1) {
-            chartHtml += `
-                <div class="gpa-section-title">Last 3 Months</div>
-                <div class="gpa-chart-container"><div class="gpa-chart-title">Recent price trend</div><div id="gpa-chart-3m" class="gpa-chart"></div></div>
-            `;
-        }
-        if (allTimeData && allTimeData.length > 1) {
-            chartHtml += `
-                <div class="gpa-section-title">All Time</div>
-                <div class="gpa-chart-container"><div class="gpa-chart-title">Full price history (${allTimeData.length} data points)</div><div id="gpa-chart-all" class="gpa-chart"></div></div>
-            `;
-        }
+        const currentPrice = getCurrentPriceFromPage();
+        const stats = calculateStats(allTimeData, currentPrice);
+        const rec = getRecommendation(stats);
 
         content.innerHTML = `
-            ${isSimulated ? `<div class="gpa-no-data" style="margin-bottom:12px;background:#e3f2fd;color:#1565c0;font-size:12px;">Estimated data. Click "Preisentwicklung" for real data.</div>` : ''}
-            <div class="gpa-stats">
-                <div class="gpa-stat ${statClass}"><div class="gpa-stat-label">Current</div><div class="gpa-stat-value">CHF ${stats.current.toFixed(2)}</div><div class="gpa-stat-sub">${stats.pricePosition}% of range</div></div>
-                <div class="gpa-stat"><div class="gpa-stat-label">Average</div><div class="gpa-stat-value">CHF ${stats.mean.toFixed(2)}</div><div class="gpa-stat-sub">${stats.count} points</div></div>
-                <div class="gpa-stat"><div class="gpa-stat-label">Median</div><div class="gpa-stat-value">CHF ${stats.median.toFixed(2)}</div></div>
-                <div class="gpa-stat ${trendClass}"><div class="gpa-stat-label">Trend</div><div class="gpa-stat-value">${trendIcon} ${Math.abs(stats.trend).toFixed(2)}</div></div>
-                <div class="gpa-stat"><div class="gpa-stat-label">Lowest</div><div class="gpa-stat-value">CHF ${stats.min.toFixed(2)}</div></div>
-                <div class="gpa-stat"><div class="gpa-stat-label">Highest</div><div class="gpa-stat-value">CHF ${stats.max.toFixed(2)}</div></div>
+            <div class="gpa-legend">
+                <span class="gpa-legend-item"><span class="gpa-legend-line gpa-legend-current"></span> Current price</span>
+                <span class="gpa-legend-item"><span class="gpa-legend-box"></span> 25%-75% range</span>
+                <span class="gpa-legend-item">─ Median (50%)</span>
+                <span class="gpa-legend-item">┬┴ Min/Max</span>
             </div>
-            ${chartHtml}
+            <div class="gpa-chart-container">
+                <div id="gpa-whisker" class="gpa-whisker"></div>
+            </div>
+            <div class="gpa-period-note">Each column shows prices for that specific time period only (not cumulative)</div>
             <div class="gpa-recommendation">
-                <div class="gpa-recommendation-title">${rec.type === 'good' ? '✓ Good Time to Buy' : rec.type === 'decent' ? '✓ Decent Price' : rec.type === 'wait' ? '⚠ Consider Waiting' : rec.type === 'caution' ? '⚠ Above Average' : '→ Average Price'}</div>
+                <div class="gpa-recommendation-title">${rec.type === 'good' ? '✓ Good Price' : rec.type === 'decent' ? '✓ OK Price' : rec.type === 'wait' ? '⚠ Wait' : rec.type === 'caution' ? '⚠ High' : '→ Average'}</div>
                 <div class="gpa-recommendation-text">${rec.text}</div>
             </div>
         `;
 
-        // Render charts after DOM is updated
-        setTimeout(() => {
-            if (threeMonthsData && threeMonthsData.length > 1) {
-                createChart(threeMonthsData, 'gpa-chart-3m');
-            }
-            if (allTimeData && allTimeData.length > 1) {
-                createChart(allTimeData, 'gpa-chart-all');
-            }
-        }, 50);
+        setTimeout(() => createWhiskerChart(allTimeData, 'gpa-whisker', stats.current), 50);
     }
 
     async function loadPriceData() {
@@ -641,7 +813,6 @@
         panel.querySelector('.gpa-content').innerHTML = `<div class="gpa-loading"><div class="spinner"></div>Analyzing price history...</div>`;
 
         let data = await fetchPriceHistory();
-        let simulated = false;
 
         // Check if we have any data in the new format
         const hasData = data && (
@@ -651,13 +822,11 @@
         );
 
         if (!hasData) {
-            const price = getCurrentPriceFromPage();
-            if (price) {
-                data = { allTime: generateSimulatedData(price), threeMonths: null };
-                simulated = true;
-            }
+            panel.querySelector('.gpa-content').innerHTML = `<div class="gpa-no-data">No price history available for this product.</div>`;
+            isLoading = false;
+            return;
         }
-        renderContent(data, simulated);
+        renderContent(data);
         isLoading = false;
     }
 
@@ -671,17 +840,27 @@
         panel.innerHTML = `
             <div class="gpa-header">
                 <h3>Price Analysis</h3>
-                <button class="gpa-close">×</button>
+                <div class="gpa-controls">
+                    <label class="gpa-auto-label"><input type="checkbox" class="gpa-auto" ${autoLoad ? 'checked' : ''}> Auto</label>
+                    <button class="gpa-read">Read</button>
+                    <button class="gpa-close">×</button>
+                </div>
             </div>
             <div class="gpa-content">
-                <div class="gpa-loading"><div class="spinner"></div>Analyzing price history...</div>
+                <div class="gpa-instructions">Click <strong>Read</strong> to analyze price history</div>
             </div>
         `;
 
         document.body.appendChild(panel);
         panel.querySelector('.gpa-close').addEventListener('click', () => panel.classList.remove('visible'));
+        panel.querySelector('.gpa-read').addEventListener('click', () => loadPriceData());
+        panel.querySelector('.gpa-auto').addEventListener('change', (e) => {
+            autoLoad = e.target.checked;
+        });
 
-        loadPriceData();
+        if (autoLoad) {
+            loadPriceData();
+        }
     }
 
     function isProductPage() {
