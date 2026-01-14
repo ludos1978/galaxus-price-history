@@ -4,7 +4,7 @@
 
     // Configurable wait times (in ms)
     const WAIT_3_MONTHS = 300;      // Wait after clicking 3 Monate tab
-    const WAIT_ALLES = 2000;        // Wait after clicking Alles tab for data to load
+    const WAIT_ALLES = 500;        // Wait after clicking Alles tab for data to load
     const WAIT_SCROLL_RESTORE = 200; // Wait before restoring scroll after clicking Alles
     const POLL_INTERVAL = 100;       // How often to check for tabs appearing
 
@@ -12,6 +12,7 @@
     let panel = null;
     let isLoading = false; // Prevent double loading
     let autoLoad = true; // Auto-load on page visit
+    let detailLevel = 7; // Number of time buckets (7, 21, or 63)
 
     // Extract product ID from URL
     function getProductId() {
@@ -256,34 +257,9 @@
     }
 
     // Extract price info from the visible text description (fallback)
+    // Returns null - we don't generate fake data, only use real extracted data
     function extractFromPriceText() {
-        const priceRange = extractPriceRangeFromText();
-        if (!priceRange || !priceRange.min || !priceRange.max) {
-            return null;
-        }
-
-        const { min: lowest, max: highest, current } = priceRange;
-
-        // Generate approximate data based on min/max/current
-        console.log('[GPA] Generating data from text - Current:', current, 'Low:', lowest, 'High:', highest);
-        const data = [];
-        const now = new Date();
-        for (let i = 12; i >= 0; i--) {
-            const date = new Date(now);
-            date.setMonth(date.getMonth() - i);
-            const range = highest - lowest;
-            const randomFactor = Math.random();
-            const price = lowest + (range * randomFactor);
-            data.push({
-                date: date.toISOString().split('T')[0],
-                price: Math.round(price * 100) / 100
-            });
-        }
-        // Set current price as last value
-        if (current) {
-            data[data.length - 1].price = current;
-        }
-        return data;
+        return null;
     }
 
     // Extract min/max/current from price description paragraph
@@ -325,7 +301,7 @@
             const m = (t.textContent || '').match(/^([\d',.]+)\.?–?$/);
             if (m) {
                 const p = parseFloat(m[1].replace(/[',]/g, ''));
-                if (p > 0) yPrices.push(p);
+                if (!isNaN(p)) yPrices.push(p); // Include 0 for correct scale
             }
         });
 
@@ -491,77 +467,98 @@
         })).filter(item => item.price > 0);
     }
 
-    // Filter data for exclusive time range (from startDays ago to endDays ago)
-    function filterByDaysExclusive(data, startDays, endDays) {
+    // Calculate time-weighted stats over a specific period (integral of price over time)
+    function calcStatsForPeriod(allData, periodStartDays, periodEndDays) {
+        if (!allData || allData.length === 0) return { avg: null, min: null, max: null, count: 0, days: 0 };
+
         const now = new Date();
         const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
-        if (startDays === Infinity) {
-            // "All" = older than endDays
-            const endCutoff = new Date(today);
-            endCutoff.setDate(endCutoff.getDate() - endDays);
-            return data.filter(item => new Date(item.date) < endCutoff);
+        // Period boundaries
+        const periodStart = new Date(today);
+        periodStart.setDate(periodStart.getDate() - periodStartDays);
+        const periodEnd = new Date(today);
+        periodEnd.setDate(periodEnd.getDate() - periodEndDays);
+
+        // Sort all data by date
+        const sorted = [...allData].sort((a, b) => new Date(a.date) - new Date(b.date));
+
+        // Find starting price (last price before period start)
+        let startingPrice = null;
+        const pointsInPeriod = [];
+
+        for (const point of sorted) {
+            const pointDate = new Date(point.date);
+            if (pointDate < periodStart) {
+                startingPrice = point.price;
+            } else if (pointDate < periodEnd) {
+                pointsInPeriod.push({ date: pointDate, price: point.price });
+            }
         }
 
-        const startCutoff = new Date(today);
-        startCutoff.setDate(startCutoff.getDate() - startDays);
-
-        if (endDays === 0) {
-            // Most recent period (to now)
-            return data.filter(item => new Date(item.date) >= startCutoff);
+        // If no data before period, use first point in period
+        if (startingPrice === null && pointsInPeriod.length > 0) {
+            startingPrice = pointsInPeriod[0].price;
+        }
+        if (startingPrice === null) {
+            return { avg: null, min: null, max: null, count: 0, days: 0 };
         }
 
-        const endCutoff = new Date(today);
-        endCutoff.setDate(endCutoff.getDate() - endDays);
+        // Calculate integral: sum of (price × duration) over the period
+        let totalWeightedPrice = 0;
+        let currentPrice = startingPrice;
+        let currentDate = periodStart;
+        const allPrices = [startingPrice];
 
-        return data.filter(item => {
-            const date = new Date(item.date);
-            return date >= startCutoff && date < endCutoff;
-        });
-    }
+        for (const point of pointsInPeriod) {
+            const days = (point.date - currentDate) / (1000 * 60 * 60 * 24);
+            totalWeightedPrice += currentPrice * days;
+            currentPrice = point.price;
+            currentDate = point.date;
+            allPrices.push(point.price);
+        }
 
-    function calcStats(prices) {
-        if (!prices || prices.length === 0) return { avg: null, min: null, max: null, count: 0 };
-        const values = prices.map(p => p.price);
-        const avg = values.reduce((a, b) => a + b, 0) / values.length;
-        const min = Math.min(...values);
-        const max = Math.max(...values);
+        // Final segment: from last point to period end
+        const finalDays = (periodEnd - currentDate) / (1000 * 60 * 60 * 24);
+        totalWeightedPrice += currentPrice * finalDays;
+
+        const totalDays = (periodEnd - periodStart) / (1000 * 60 * 60 * 24);
+        const avg = totalDays > 0 ? totalWeightedPrice / totalDays : startingPrice;
+
         return {
             avg: Math.round(avg * 100) / 100,
-            min: Math.round(min * 100) / 100,
-            max: Math.round(max * 100) / 100,
-            count: values.length
+            min: Math.round(Math.min(...allPrices) * 100) / 100,
+            max: Math.round(Math.max(...allPrices) * 100) / 100,
+            count: pointsInPeriod.length,
+            days: Math.round(totalDays)
         };
     }
 
     function calculateStats(allData, currentPriceOverride) {
         if (!allData || allData.length === 0) return null;
 
-        // Exclusive time ranges (matching whisker chart)
-        // All = older than 3Y, 3Y = 3Y-1Y, 1Y = 1Y-3M, 3M = 3M-1M, 1M = 1M-1W, 1W = last week
-        const dataAll = filterByDaysExclusive(allData, Infinity, 1095);
-        const data3y = filterByDaysExclusive(allData, 1095, 365);
-        const data1y = filterByDaysExclusive(allData, 365, 90);
-        const data3m = filterByDaysExclusive(allData, 90, 30);
-        const data1m = filterByDaysExclusive(allData, 30, 7);
-        const data1w = filterByDaysExclusive(allData, 7, 0);
+        // Calculate time-weighted stats for each period (proper integral over each time range)
+        // Each period computes the integral of price over its full duration
+        const y3 = calcStatsForPeriod(allData, 1095, 365);  // 3Y-1Y
+        const y1 = calcStatsForPeriod(allData, 365, 90);    // 1Y-3M
+        const m3 = calcStatsForPeriod(allData, 90, 30);     // 3M-1M
+        const m1 = calcStatsForPeriod(allData, 30, 7);      // 1M-1W
+        const w1 = calcStatsForPeriod(allData, 7, 1);       // 1W-1D
+        const d1 = calcStatsForPeriod(allData, 1, 0);       // 1D-now
 
-        const all = calcStats(dataAll);
-        const y3 = calcStats(data3y);
-        const y1 = calcStats(data1y);
-        const m3 = calcStats(data3m);
-        const m1 = calcStats(data1m);
-        const w1 = calcStats(data1w);
+        // Overall stats for the full data range
+        const sorted = [...allData].sort((a, b) => new Date(a.date) - new Date(b.date));
+        const firstDate = new Date(sorted[0].date);
+        const totalDays = Math.round((new Date() - firstDate) / (1000 * 60 * 60 * 24));
+        const totalStats = calcStatsForPeriod(allData, totalDays, 0);
 
-        // For overall stats, use all data
-        const totalStats = calcStats(allData);
         const current = currentPriceOverride || allData[allData.length - 1]?.price || 0;
         const pricePosition = totalStats.max !== totalStats.min ? ((current - totalStats.min) / (totalStats.max - totalStats.min)) * 100 : 50;
 
         return {
             current: Math.round(current * 100) / 100,
-            // Stats for each exclusive period
-            w1, m1, m3, y1, y3, all,
+            // Stats for each exclusive period (time-weighted)
+            d1, w1, m1, m3, y1, y3,
             pricePosition: Math.round(pricePosition),
             count: allData.length
         };
@@ -595,8 +592,8 @@
                 <path d="${areaD}" fill="url(#grad${containerId})"/>
                 <path d="${pathD}" fill="none" stroke="#1a1a2e" stroke-width="2"/>
                 <circle cx="${xScale(data.length - 1)}" cy="${yScale(data[data.length - 1].price)}" r="4" fill="#1a1a2e"/>
-                <text x="${padding.left - 5}" y="${yScale(maxPrice) + 4}" text-anchor="end" font-size="10" fill="#888">CHF ${maxPrice.toFixed(0)}</text>
-                <text x="${padding.left - 5}" y="${yScale(minPrice) + 4}" text-anchor="end" font-size="10" fill="#888">CHF ${minPrice.toFixed(0)}</text>
+                <text x="${padding.left - 5}" y="${yScale(maxPrice) + 4}" text-anchor="end" font-size="12" fill="#333">CHF ${maxPrice.toFixed(0)}</text>
+                <text x="${padding.left - 5}" y="${yScale(minPrice) + 4}" text-anchor="end" font-size="12" fill="#333">CHF ${minPrice.toFixed(0)}</text>
             </svg>
         `;
     }
@@ -609,73 +606,150 @@
         const now = new Date();
         const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
-        // Define time buckets (All on left, recent on right)
-        const buckets = [
-            { label: 'All', days: Infinity },
-            { label: '3Y', days: 1095 },
-            { label: '1Y', days: 365 },
-            { label: '3M', days: 90 },
-            { label: '1M', days: 30 },
-            { label: '1W', days: 7 }
-        ];
+        // Major time boundaries (days ago): 3Y, 1Y, 3M, 1M, 1W, 1D, NOW
+        // NOW (0 to 0) is a special marker for current price display
+        const majorBoundaries = [1095, 365, 90, 30, 7, 1, 0, -1];
+        const majorLabels = ['3Y', '1Y', '3M', '1M', '1W', '1D', 'NOW'];
 
-        // Calculate statistics for each bucket
-        const calcPercentile = (arr, p) => {
-            const sorted = [...arr].sort((a, b) => a - b);
-            const idx = (p / 100) * (sorted.length - 1);
-            const lower = Math.floor(idx);
-            const upper = Math.ceil(idx);
-            if (lower === upper) return sorted[lower];
-            return sorted[lower] + (idx - lower) * (sorted[upper] - sorted[lower]);
+        // Generate buckets based on detail level
+        // 7 = 1 bucket per major period (NOW is always just 1 bucket)
+        const numMajorPeriods = 7;
+        const subdiv = detailLevel / numMajorPeriods;
+        const buckets = [];
+
+        for (let i = 0; i < numMajorPeriods; i++) {
+            const startDays = majorBoundaries[i];
+            const endDays = majorBoundaries[i + 1];
+
+            // "NOW" is special - just shows current price, no time range
+            if (endDays === -1) {
+                buckets.push({
+                    label: 'NOW',
+                    isNow: true,
+                    isMajor: true
+                });
+                continue;
+            }
+
+            const span = startDays - endDays;
+
+            for (let j = 0; j < subdiv; j++) {
+                const bucketStart = startDays - (span * j / subdiv);
+                const bucketEnd = startDays - (span * (j + 1) / subdiv);
+                const isMajor = (j === 0);
+                buckets.push({
+                    label: isMajor ? majorLabels[i] : '',
+                    startDays: bucketStart,
+                    endDays: bucketEnd,
+                    isMajor: isMajor
+                });
+            }
+        }
+
+        // Calculate time-weighted percentile for a period
+        // Returns the price at which cumulative duration reaches p% of total duration
+        const calcTimeWeightedPercentile = (priceSegments, totalDays, p) => {
+            if (priceSegments.length === 0) return null;
+            // Sort by price
+            const sorted = [...priceSegments].sort((a, b) => a.price - b.price);
+            const targetDays = (p / 100) * totalDays;
+            let cumDays = 0;
+            for (const seg of sorted) {
+                cumDays += seg.days;
+                if (cumDays >= targetDays) return seg.price;
+            }
+            return sorted[sorted.length - 1].price;
         };
 
         const boxes = [];
         for (let i = 0; i < buckets.length; i++) {
             const bucket = buckets[i];
-            const nextBucket = buckets[i + 1]; // smaller time period
 
-            // Filter data for ONLY this period (exclusive of smaller periods)
-            let bucketData;
-            if (bucket.days === Infinity) {
-                // "All" = older than 3Y
-                const endCutoff = new Date(today);
-                endCutoff.setDate(endCutoff.getDate() - (nextBucket ? nextBucket.days : 0));
-                bucketData = data.filter(d => new Date(d.date) < endCutoff);
-            } else if (!nextBucket) {
-                // Last bucket (1W) = from 1W ago to now
-                const startCutoff = new Date(today);
-                startCutoff.setDate(startCutoff.getDate() - bucket.days);
-                bucketData = data.filter(d => new Date(d.date) >= startCutoff);
-            } else {
-                // Middle buckets = from bucket.days ago to nextBucket.days ago
-                const startCutoff = new Date(today);
-                startCutoff.setDate(startCutoff.getDate() - bucket.days);
-                const endCutoff = new Date(today);
-                endCutoff.setDate(endCutoff.getDate() - nextBucket.days);
-                bucketData = data.filter(d => {
-                    const date = new Date(d.date);
-                    return date >= startCutoff && date < endCutoff;
+            // "NOW" bucket - just shows current price, no box plot
+            if (bucket.isNow) {
+                boxes.push({
+                    label: 'NOW',
+                    isNow: true,
+                    isMajor: true,
+                    price: currentPrice
                 });
-            }
-
-            if (bucketData.length < 2) {
-                boxes.push({ label: bucket.label, min: null });
-                console.log(`[GPA] ${bucket.label}: no data (${bucketData.length} points)`);
                 continue;
             }
 
-            const prices = bucketData.map(d => d.price);
+            // Calculate period boundaries
+            const periodStart = new Date(today);
+            periodStart.setDate(periodStart.getDate() - bucket.startDays);
+            const periodEnd = new Date(today);
+            periodEnd.setDate(periodEnd.getDate() - bucket.endDays);
+
+            // Sort all data by date
+            const sorted = [...data].sort((a, b) => new Date(a.date) - new Date(b.date));
+
+            // Find starting price and points in period
+            let startingPrice = null;
+            const pointsInPeriod = [];
+
+            for (const point of sorted) {
+                const pointDate = new Date(point.date);
+                if (pointDate < periodStart) {
+                    startingPrice = point.price;
+                } else if (pointDate < periodEnd) {
+                    pointsInPeriod.push({ date: pointDate, price: point.price });
+                }
+            }
+
+            if (startingPrice === null && pointsInPeriod.length > 0) {
+                startingPrice = pointsInPeriod[0].price;
+            }
+
+            if (startingPrice === null) {
+                boxes.push({ label: bucket.label, isMajor: bucket.isMajor, min: null });
+                continue;
+            }
+
+            // Build price segments with duration (for time-weighted stats)
+            const priceSegments = [];
+            let currentPrice = startingPrice;
+            let currentDate = periodStart;
+            let minPrice = startingPrice;
+            let maxPrice = startingPrice;
+
+            for (const point of pointsInPeriod) {
+                const days = (point.date - currentDate) / (1000 * 60 * 60 * 24);
+                if (days > 0) {
+                    priceSegments.push({ price: currentPrice, days: days });
+                }
+                currentPrice = point.price;
+                currentDate = point.date;
+                minPrice = Math.min(minPrice, point.price);
+                maxPrice = Math.max(maxPrice, point.price);
+            }
+
+            // Final segment to period end
+            const finalDays = (periodEnd - currentDate) / (1000 * 60 * 60 * 24);
+            if (finalDays > 0) {
+                priceSegments.push({ price: currentPrice, days: finalDays });
+            }
+
+            const totalDays = (periodEnd - periodStart) / (1000 * 60 * 60 * 24);
+
+            if (totalDays <= 0) {
+                boxes.push({ label: bucket.label, isMajor: bucket.isMajor, min: null });
+                continue;
+            }
+
             const box = {
                 label: bucket.label,
-                min: Math.min(...prices),
-                q1: calcPercentile(prices, 25),
-                median: calcPercentile(prices, 50),
-                q3: calcPercentile(prices, 75),
-                max: Math.max(...prices),
-                count: prices.length
+                isMajor: bucket.isMajor,
+                min: minPrice,
+                q1: calcTimeWeightedPercentile(priceSegments, totalDays, 25),
+                median: calcTimeWeightedPercentile(priceSegments, totalDays, 50),
+                q3: calcTimeWeightedPercentile(priceSegments, totalDays, 75),
+                max: maxPrice,
+                count: pointsInPeriod.length,
+                days: Math.round(totalDays)
             };
             boxes.push(box);
-            console.log(`[GPA] ${bucket.label}: ${box.count} points, min=${box.min}, q1=${box.q1}, median=${box.median}, q3=${box.q3}, max=${box.max}`);
         }
 
         // Get global min/max for scaling
@@ -686,9 +760,9 @@
         const minPrice = Math.min(...allPrices) * 0.95;
         const maxPrice = Math.max(...allPrices) * 1.05;
 
-        const width = container.clientWidth || 400;
-        const height = 360;
-        const padding = { top: 30, right: 15, bottom: 35, left: 15 };
+        const width = container.clientWidth || 480;
+        const height = 380;
+        const padding = { top: 35, right: 15, bottom: 40, left: 15 };
         const chartWidth = width - padding.left - padding.right;
         const chartHeight = height - padding.top - padding.bottom;
 
@@ -703,16 +777,31 @@
         if (currentPrice && currentPrice >= minPrice && currentPrice <= maxPrice) {
             const cy = yScale(currentPrice);
             svg += `<line x1="0" y1="${cy}" x2="${width}" y2="${cy}" stroke="#e53935" stroke-width="2" stroke-dasharray="6,3"/>`;
-            svg += `<text x="5" y="${cy - 6}" font-size="13" fill="#e53935" font-weight="bold">${currentPrice.toFixed(0)}</text>`;
-            svg += `<text x="${width - 5}" y="${cy - 6}" text-anchor="end" font-size="13" fill="#e53935" font-weight="bold">${currentPrice.toFixed(0)}</text>`;
+            // Price value shown at NOW column, only show on left side
+            svg += `<text x="5" y="${cy - 6}" font-size="14" fill="#e53935" font-weight="600">${currentPrice.toFixed(0)}</text>`;
         }
 
         // Draw box plots
         boxes.forEach((box, i) => {
             const x = padding.left + i * boxSpacing + boxSpacing / 2;
 
-            // Label
-            svg += `<text x="${x}" y="${height - 8}" text-anchor="middle" font-size="14" fill="#666" font-weight="600">${box.label}</text>`;
+            // "NOW" bucket - show current price with dot and label
+            if (box.isNow) {
+                svg += `<text x="${x}" y="${height - 8}" text-anchor="middle" font-size="12" fill="#333">${box.label}</text>`;
+                if (currentPrice) {
+                    const cy = yScale(currentPrice);
+                    // Dot at current price
+                    svg += `<circle cx="${x}" cy="${cy}" r="6" fill="#e53935"/>`;
+                    // Price value above
+                    svg += `<text x="${x}" y="${cy - 12}" text-anchor="middle" font-size="14" fill="#e53935" font-weight="600">${currentPrice.toFixed(0)}</text>`;
+                }
+                return;
+            }
+
+            // Label only for major buckets
+            if (box.isMajor && box.label) {
+                svg += `<text x="${x}" y="${height - 8}" text-anchor="middle" font-size="12" fill="#333">${box.label}</text>`;
+            }
 
             if (box.min == null) return;
 
@@ -742,10 +831,14 @@
             // Median line
             svg += `<line x1="${x - boxWidth/2}" y1="${yMedian}" x2="${x + boxWidth/2}" y2="${yMedian}" stroke="${boxColor}" stroke-width="3"/>`;
 
-            // Value labels (max, median, min)
-            svg += `<text x="${x}" y="${yMax - 6}" text-anchor="middle" font-size="12" fill="#666">${box.max.toFixed(0)}</text>`;
-            svg += `<text x="${x}" y="${yMedian}" text-anchor="middle" font-size="14" fill="${boxColor}" font-weight="bold" dy="0.35em">${box.median.toFixed(0)}</text>`;
-            svg += `<text x="${x}" y="${yMin + 16}" text-anchor="middle" font-size="12" fill="#666">${box.min.toFixed(0)}</text>`;
+            // Value labels only for major buckets
+            if (box.isMajor) {
+                svg += `<text x="${x}" y="${yMax - 8}" text-anchor="middle" font-size="12" fill="#333">${box.max.toFixed(0)}</text>`;
+                svg += `<text x="${x + boxWidth/2 + 3}" y="${yQ3}" text-anchor="start" font-size="12" fill="#333" dy="0.35em">${box.q3.toFixed(0)}</text>`;
+                svg += `<text x="${x}" y="${yMedian}" text-anchor="middle" font-size="14" fill="${boxColor}" font-weight="600" dy="0.35em">${box.median.toFixed(0)}</text>`;
+                svg += `<text x="${x + boxWidth/2 + 3}" y="${yQ1}" text-anchor="start" font-size="12" fill="#333" dy="0.35em">${box.q1.toFixed(0)}</text>`;
+                svg += `<text x="${x}" y="${yMin + 18}" text-anchor="middle" font-size="12" fill="#333">${box.min.toFixed(0)}</text>`;
+            }
         });
 
         svg += '</svg>';
@@ -753,14 +846,15 @@
     }
 
     function getRecommendation(stats) {
-        const avg = (stats.m3 && stats.m3.avg) || (stats.all && stats.all.avg);
+        const avg = (stats.m3 && stats.m3.avg) || (stats.y1 && stats.y1.avg);
         if (!avg) return { type: 'neutral', text: 'Not enough data.' };
         const diff = ((stats.current - avg) / avg) * 100;
-        if (diff <= -10) return { type: 'good', text: `${Math.abs(diff).toFixed(0)}% below avg` };
-        if (diff <= -5) return { type: 'decent', text: `${Math.abs(diff).toFixed(0)}% below avg` };
-        if (diff >= 10) return { type: 'wait', text: `${diff.toFixed(0)}% above avg` };
-        if (diff >= 5) return { type: 'caution', text: `${diff.toFixed(0)}% above avg` };
-        return { type: 'neutral', text: `${diff >= 0 ? '+' : ''}${diff.toFixed(0)}% vs avg` };
+        // Text shows comparison to time-weighted average
+        if (diff <= -10) return { type: 'good', text: `${Math.abs(diff).toFixed(0)}% below time-weighted avg` };
+        if (diff <= -5) return { type: 'decent', text: `${Math.abs(diff).toFixed(0)}% below time-weighted avg` };
+        if (diff >= 10) return { type: 'wait', text: `${diff.toFixed(0)}% above time-weighted avg` };
+        if (diff >= 5) return { type: 'caution', text: `${diff.toFixed(0)}% above time-weighted avg` };
+        return { type: 'neutral', text: `${diff >= 0 ? '+' : ''}${diff.toFixed(0)}% vs time-weighted avg` };
     }
 
     function renderContent(dataObj) {
@@ -782,6 +876,10 @@
         const stats = calculateStats(allTimeData, currentPrice);
         const rec = getRecommendation(stats);
 
+        // Calculate % above all-time minimum
+        const allTimeMin = Math.min(...allTimeData.map(d => d.price));
+        const aboveMinPct = allTimeMin > 0 ? ((stats.current - allTimeMin) / allTimeMin * 100) : 0;
+
         content.innerHTML = `
             <div class="gpa-legend">
                 <span class="gpa-legend-item"><span class="gpa-legend-line gpa-legend-current"></span> Current price</span>
@@ -793,9 +891,10 @@
                 <div id="gpa-whisker" class="gpa-whisker"></div>
             </div>
             <div class="gpa-period-note">Each column shows prices for that specific time period only (not cumulative)</div>
-            <div class="gpa-recommendation">
-                <div class="gpa-recommendation-title">${rec.type === 'good' ? '✓ Good Price' : rec.type === 'decent' ? '✓ OK Price' : rec.type === 'wait' ? '⚠ Wait' : rec.type === 'caution' ? '⚠ High' : '→ Average'}</div>
+            <div class="gpa-recommendation ${rec.type === 'good' || rec.type === 'decent' ? 'buy' : rec.type === 'wait' || rec.type === 'caution' ? 'wait' : 'neutral'}">
+                <div class="gpa-recommendation-title">${rec.type === 'good' ? '✓ BUY - Good Price' : rec.type === 'decent' ? '✓ BUY - OK Price' : rec.type === 'wait' ? '✗ WAIT - Too High' : rec.type === 'caution' ? '✗ WAIT - Above Average' : '• NEUTRAL - Average Price'}</div>
                 <div class="gpa-recommendation-text">${rec.text}</div>
+                <div class="gpa-recommendation-detail">${aboveMinPct.toFixed(0)}% above all-time low (${allTimeMin.toFixed(0)})</div>
             </div>
         `;
 
@@ -842,6 +941,11 @@
                 <h3>Price Analysis</h3>
                 <div class="gpa-controls">
                     <label class="gpa-auto-label"><input type="checkbox" class="gpa-auto" ${autoLoad ? 'checked' : ''}> Auto</label>
+                    <select class="gpa-detail">
+                        <option value="7" ${detailLevel === 7 ? 'selected' : ''}>7</option>
+                        <option value="21" ${detailLevel === 21 ? 'selected' : ''}>21</option>
+                        <option value="63" ${detailLevel === 63 ? 'selected' : ''}>63</option>
+                    </select>
                     <button class="gpa-read">Read</button>
                     <button class="gpa-close">×</button>
                 </div>
@@ -856,6 +960,10 @@
         panel.querySelector('.gpa-read').addEventListener('click', () => loadPriceData());
         panel.querySelector('.gpa-auto').addEventListener('change', (e) => {
             autoLoad = e.target.checked;
+        });
+        panel.querySelector('.gpa-detail').addEventListener('change', (e) => {
+            detailLevel = parseInt(e.target.value, 10);
+            loadPriceData(); // Reload with new detail level
         });
 
         if (autoLoad) {
