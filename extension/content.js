@@ -600,8 +600,17 @@
 
     // Create box plot / whisker chart for price distribution
     function createWhiskerChart(data, containerId, currentPrice) {
+      try {
         const container = document.getElementById(containerId);
-        if (!container || !data || data.length === 0) return;
+        if (!container) {
+            console.log('[GPA] Chart container not found:', containerId);
+            return;
+        }
+        if (!data || data.length === 0) {
+            console.log('[GPA] No data for chart');
+            return;
+        }
+        console.log('[GPA] Creating whisker chart with', data.length, 'data points, currentPrice:', currentPrice);
 
         const now = new Date();
         const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -612,11 +621,14 @@
         const majorLabels = ['3Y', '1Y', '3M', '1M', '1W', '1D', 'NOW'];
 
         // Generate buckets based on detail level
-        // 7 = 1 bucket per major period (NOW is always just 1 bucket)
-        const numMajorPeriods = 7;
-        const subdiv = detailLevel / numMajorPeriods;
+        // NOW is always just 1 bucket, other 6 periods get subdivided
+        // 7 = 6×1 + 1, 19 = 6×3 + 1, 55 = 6×9 + 1
+        const numSubdividablePeriods = 6;
+        const subdiv = Math.max(1, Math.round((detailLevel - 1) / numSubdividablePeriods));
+        console.log('[GPA] detailLevel:', detailLevel, 'subdiv:', subdiv);
         const buckets = [];
 
+        const numMajorPeriods = 7; // 6 subdivided + NOW
         for (let i = 0; i < numMajorPeriods; i++) {
             const startDays = majorBoundaries[i];
             const endDays = majorBoundaries[i + 1];
@@ -646,6 +658,8 @@
             }
         }
 
+        console.log('[GPA] Buckets created:', buckets.length);
+
         // Calculate time-weighted percentile for a period
         // Returns the price at which cumulative duration reaches p% of total duration
         const calcTimeWeightedPercentile = (priceSegments, totalDays, p) => {
@@ -661,9 +675,14 @@
             return sorted[sorted.length - 1].price;
         };
 
+        // Sort data once outside the loop (performance fix)
+        const sortedData = [...data].sort((a, b) => new Date(a.date) - new Date(b.date));
+        console.log('[GPA] Data sorted, processing buckets...');
+
         const boxes = [];
         for (let i = 0; i < buckets.length; i++) {
             const bucket = buckets[i];
+            console.log('[GPA] Processing bucket', i, 'of', buckets.length);
 
             // "NOW" bucket - just shows current price, no box plot
             if (bucket.isNow) {
@@ -682,14 +701,11 @@
             const periodEnd = new Date(today);
             periodEnd.setDate(periodEnd.getDate() - bucket.endDays);
 
-            // Sort all data by date
-            const sorted = [...data].sort((a, b) => new Date(a.date) - new Date(b.date));
-
             // Find starting price and points in period
             let startingPrice = null;
             const pointsInPeriod = [];
 
-            for (const point of sorted) {
+            for (const point of sortedData) {
                 const pointDate = new Date(point.date);
                 if (pointDate < periodStart) {
                     startingPrice = point.price;
@@ -709,26 +725,26 @@
 
             // Build price segments with duration (for time-weighted stats)
             const priceSegments = [];
-            let currentPrice = startingPrice;
-            let currentDate = periodStart;
-            let minPrice = startingPrice;
-            let maxPrice = startingPrice;
+            let segmentPrice = startingPrice;
+            let segmentDate = periodStart;
+            let minPriceVal = startingPrice;
+            let maxPriceVal = startingPrice;
 
             for (const point of pointsInPeriod) {
-                const days = (point.date - currentDate) / (1000 * 60 * 60 * 24);
+                const days = (point.date - segmentDate) / (1000 * 60 * 60 * 24);
                 if (days > 0) {
-                    priceSegments.push({ price: currentPrice, days: days });
+                    priceSegments.push({ price: segmentPrice, days: days });
                 }
-                currentPrice = point.price;
-                currentDate = point.date;
-                minPrice = Math.min(minPrice, point.price);
-                maxPrice = Math.max(maxPrice, point.price);
+                segmentPrice = point.price;
+                segmentDate = point.date;
+                minPriceVal = Math.min(minPriceVal, point.price);
+                maxPriceVal = Math.max(maxPriceVal, point.price);
             }
 
             // Final segment to period end
-            const finalDays = (periodEnd - currentDate) / (1000 * 60 * 60 * 24);
+            const finalDays = (periodEnd - segmentDate) / (1000 * 60 * 60 * 24);
             if (finalDays > 0) {
-                priceSegments.push({ price: currentPrice, days: finalDays });
+                priceSegments.push({ price: segmentPrice, days: finalDays });
             }
 
             const totalDays = (periodEnd - periodStart) / (1000 * 60 * 60 * 24);
@@ -738,27 +754,32 @@
                 continue;
             }
 
+            console.log('[GPA] Bucket', i, bucket.label, 'segments:', priceSegments.length);
             const box = {
                 label: bucket.label,
                 isMajor: bucket.isMajor,
-                min: minPrice,
+                min: minPriceVal,
                 q1: calcTimeWeightedPercentile(priceSegments, totalDays, 25),
                 median: calcTimeWeightedPercentile(priceSegments, totalDays, 50),
                 q3: calcTimeWeightedPercentile(priceSegments, totalDays, 75),
-                max: maxPrice,
+                max: maxPriceVal,
                 count: pointsInPeriod.length,
                 days: Math.round(totalDays)
             };
             boxes.push(box);
         }
 
+        console.log('[GPA] Created', boxes.length, 'boxes, boxes with data:', boxes.filter(b => b.min != null).length);
+
         // Get global min/max for scaling
         const allPrices = boxes.filter(b => b.min != null && !b.isNow).flatMap(b => [b.min, b.max]);
         if (currentPrice) allPrices.push(currentPrice);
         if (allPrices.length === 0) {
-            console.log('[GPA] No price data for chart');
+            console.log('[GPA] No price data for chart - allPrices empty');
+            container.innerHTML = '<div style="text-align:center;padding:20px;color:#666;">No price data available for chart</div>';
             return;
         }
+        console.log('[GPA] Price range:', Math.min(...allPrices), '-', Math.max(...allPrices));
 
         const minPrice = Math.min(...allPrices) * 0.95;
         const maxPrice = Math.max(...allPrices) * 1.05;
@@ -845,7 +866,12 @@
         });
 
         svg += '</svg>';
+        console.log('[GPA] Setting SVG, length:', svg.length);
         container.innerHTML = svg;
+        console.log('[GPA] Container innerHTML set, length:', container.innerHTML.length);
+      } catch (e) {
+        console.error('[GPA] Error in createWhiskerChart:', e);
+      }
     }
 
     function getRecommendation(stats) {
@@ -946,8 +972,8 @@
                     <label class="gpa-auto-label"><input type="checkbox" class="gpa-auto" ${autoLoad ? 'checked' : ''}> Auto</label>
                     <select class="gpa-detail">
                         <option value="7" ${detailLevel === 7 ? 'selected' : ''}>7</option>
-                        <option value="21" ${detailLevel === 21 ? 'selected' : ''}>21</option>
-                        <option value="63" ${detailLevel === 63 ? 'selected' : ''}>63</option>
+                        <option value="19" ${detailLevel === 19 ? 'selected' : ''}>19</option>
+                        <option value="55" ${detailLevel === 55 ? 'selected' : ''}>55</option>
                     </select>
                     <button class="gpa-read">Read</button>
                     <button class="gpa-close">×</button>
